@@ -87,7 +87,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
             | FileExtension::Otc
             | FileExtension::Otf
             | FileExtension::Ttc
-            | FileExtension::Ttf => Font::new(reader)?.installers(),
+            | FileExtension::Ttf => Font::new(reader, file_name)?.installers(),
         };
         Ok(Self {
             installers,
