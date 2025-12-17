@@ -94,7 +94,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
             | ValidFileExtensions::Otc
             | ValidFileExtensions::Otf
             | ValidFileExtensions::Ttc
-            | ValidFileExtensions::Ttf => Font::new(reader)?.installers(),
+            | ValidFileExtensions::Ttf => Font::new(reader, file_name)?.installers(),
         };
         Ok(Self {
             installers,
