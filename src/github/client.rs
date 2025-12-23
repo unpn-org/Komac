@@ -117,8 +117,9 @@ impl GitHub {
         &self,
         identifier: &PackageIdentifier,
         latest_version: &PackageVersion,
+        font: bool,
     ) -> Result<Manifests, GitHubError> {
-        let full_package_path = PackagePath::new(identifier, Some(latest_version), None);
+        let full_package_path = PackagePath::new(identifier, Some(latest_version), None, font);
         let content = self
             .get_directory_content_with_text(
                 upstream().owner(),
@@ -213,8 +214,9 @@ impl GitHub {
         identifier: &PackageIdentifier,
         version: &PackageVersion,
         manifest_type: ManifestTypeWithLocale,
+        font: bool,
     ) -> Result<T, GitHubError> {
-        let path = PackagePath::new(identifier, Some(version), Some(&manifest_type));
+        let path = PackagePath::new(identifier, Some(version), Some(&manifest_type), font);
         let content = self
             .get_file_content(upstream().owner(), upstream().name(), &path)
             .await?;
@@ -505,6 +507,7 @@ impl GitHub {
         reason: &str,
         fork: &RepositoryData,
         winget_pkgs: &RepositoryData,
+        font: bool,
         #[builder(default)] issue_resolves: &[NonZeroU32],
     ) -> Result<create_pull_request::PullRequest, GitHubError> {
         // Create an indeterminate progress bar to show as a pull request is being created
@@ -526,7 +529,7 @@ impl GitHub {
             .get_directory_content()
             .owner(&fork.owner)
             .branch_name(&branch_name)
-            .path(&PackagePath::new(identifier, Some(version), None))
+            .path(&PackagePath::new(identifier, Some(version), None, font))
             .call()
             .await?
             .map(FileDeletion::new)
@@ -578,6 +581,9 @@ impl GitHub {
         created_with: Option<&str>,
         created_with_url: Option<&DecodedUrl>,
     ) -> Result<create_pull_request::PullRequest, GitHubError> {
+        let font = changes
+            .iter()
+            .any(|change| change.path().starts_with("fonts/"));
         let (current_user, winget_pkgs) =
             tokio::try_join!(self.get_username(), self.get_winget_pkgs().send())?;
         let fork = self.get_winget_pkgs().owner(&current_user).send().await?;
@@ -594,7 +600,7 @@ impl GitHub {
             self.get_directory_content()
                 .owner(&current_user)
                 .branch_name(&branch_name)
-                .path(&PackagePath::new(identifier, replace_version, None))
+                .path(&PackagePath::new(identifier, replace_version, None, font))
                 .call()
                 .await?
                 .map(FileDeletion::new)

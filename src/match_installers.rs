@@ -1,9 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use winget_types::{
-    installer::{Architecture, ElevationRequirement, Installer, Scope},
-    utils::ValidFileExtensions,
-};
+use winget_types::installer::{Architecture, ElevationRequirement, Installer, Scope};
 
 fn locale_score(previous_installer: &Installer, new_installer: &Installer) -> f64 {
     let Some(previous_locale) = previous_installer.locale.as_ref() else {
@@ -119,14 +116,13 @@ pub fn match_installers(
             // Do not apply this to regular installers: universal executables are often repeated
             // under several manifest architectures, while their PE architecture can differ by
             // installer type (for example, an x86 NSIS stub and an x64 portable executable).
-            let previous_extension = ValidFileExtensions::from_url(&previous_installer.url);
-            let has_matching_nested_architecture = previous_installer
-                .nested_installer_type
-                .is_some()
-                && new_installers.iter().any(|new_installer| {
-                    new_installer.architecture == previous_installer.architecture
-                        && ValidFileExtensions::from_url(&new_installer.url) == previous_extension
-                });
+            let previous_extension = FileExtension::from_url(&previous_installer.url);
+            let has_matching_nested_architecture =
+                previous_installer.nested_installer_type.is_some()
+                    && new_installers.iter().any(|new_installer| {
+                        new_installer.architecture == previous_installer.architecture
+                            && FileExtension::from_url(&new_installer.url) == previous_extension
+                    });
             let mut max_score = 0.0;
             let mut best_match = None;
 
@@ -161,7 +157,7 @@ pub fn match_installers(
                     new_installer.url.as_str(),
                 );
 
-                let new_extension = ValidFileExtensions::from_url(&new_installer.url);
+                let new_extension = FileExtension::from_url(&new_installer.url);
                 if new_extension != previous_extension {
                     score = 0.0;
                 }
@@ -230,7 +226,10 @@ mod tests {
         url::DecodedUrl,
     };
 
-    use crate::match_installers::{match_installers, unmatched_installers};
+    use crate::{
+        analysis::extensions::FileExtension,
+        match_installers::{match_installers, unmatched_installers},
+    };
 
     #[test]
     fn test_vscodium() {
