@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use winget_types::{Manifest as WingetManifest, ManifestType, utils::GenericManifest};
 
 use crate::{
-    commands::utils::{RateLimit, SPINNER_TICK_RATE, SubmitOption},
+    commands::utils::{RateLimit, SPINNER_TICK_RATE, SubmitOption, check_package_type},
     github::client::GitHub,
     manifests::{Manifests, manifest::Manifest},
     prompts::handle_inquire_error,
@@ -151,8 +151,9 @@ impl Submit {
 
             let identifier = package_manifests.package_identifier();
             let version = package_manifests.package_version();
+            let is_font = check_package_type(&package_manifests.installer)?;
 
-            let mut changes = package_manifests.create(identifier, version, None);
+            let mut changes = package_manifests.create(identifier, version, None, is_font);
 
             if self.dry_run {
                 return Ok(());
@@ -165,7 +166,11 @@ impl Submit {
                 continue;
             }
 
-            let versions = github.get_versions(identifier).await.ok();
+            let versions = github
+                .get_versions(identifier, Some(is_font))
+                .await
+                .ok()
+                .map(|(versions, _)| versions);
 
             rate_limit.wait().await;
 
