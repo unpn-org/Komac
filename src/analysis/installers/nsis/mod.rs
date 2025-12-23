@@ -36,7 +36,6 @@ use winget_types::{
 use zerocopy::LE;
 
 use super::{
-    super::extensions::EXE,
     nsis::{
         entry::{Entry, EntryError},
         file_system::FsEntry,
@@ -47,7 +46,10 @@ use super::{
     utils::{LzmaStreamHeader, RELATIVE_PROGRAM_FILES_64, RELATIVE_TEMP_FOLDER},
 };
 use crate::{
-    analysis::{Installers, installers::nsis::first_header::finder::FirstHeaderFinder},
+    analysis::{
+        Installers, extensions::FileExtension,
+        installers::nsis::first_header::finder::FirstHeaderFinder,
+    },
     read::ReadBytesExt,
     traits::{FromMachine, IntoWingetArchitecture},
 };
@@ -162,9 +164,8 @@ impl Nsis {
                     .file_system
                     .files()
                     .filter(|file| {
-                        Utf8Path::new(file.name())
-                            .extension()
-                            .is_some_and(|extension| extension.eq_ignore_ascii_case(EXE))
+                        FileExtension::from_path(Utf8Path::new(file.name()))
+                            .is_ok_and(|extension| extension == FileExtension::Exe)
                     })
                     .min_by_key(|file| levenshtein(file.name(), &app_name))
                     .and_then(|file| {
