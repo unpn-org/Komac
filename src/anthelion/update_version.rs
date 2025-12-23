@@ -29,7 +29,10 @@ use crate::{
     download::Downloader,
     github::{GITHUB_HOST, client::GitHub},
     match_installers::{match_installers, unmatched_installers},
-    traits::path::{LowercaseExtension, NormalizePath},
+    traits::{
+        InstallerManifestExt,
+        path::{LowercaseExtension, NormalizePath},
+    },
 };
 
 enum VersionSelector {
@@ -145,22 +148,19 @@ pub async fn update_package(
 
     let replace = parse_replacement(options.replace)?;
 
-    match options.package_kind.as_deref() {
-        None | Some("auto" | "standard") => {}
-        Some("font") => {
-            return Err(AnthelionError::invalid(
-                "Font packages are not supported by this build",
-            ));
-        }
+    let package_kind = match options.package_kind.as_deref() {
+        None | Some("auto") => None,
+        Some("standard") => Some(false),
+        Some("font") => Some(true),
         Some(kind) => {
             return Err(AnthelionError::invalid(format!(
                 "Invalid package kind {kind:?}"
             )));
         }
-    }
+    };
 
-    let versions = github
-        .get_versions(&package_identifier)
+    let (versions, font) = github
+        .get_versions(&package_identifier, package_kind)
         .await
         .map_err(|e| AnthelionError::failure(Report::from(e).wrap_err("Failed to get versions")))?;
 
@@ -170,7 +170,7 @@ pub async fn update_package(
 
     let (mut manifests, mut github_values, mut download_results) = try_join!(
         github
-            .get_manifests(&package_identifier, latest_version)
+            .get_manifests(&package_identifier, latest_version, font)
             .map_err(|e| AnthelionError::failure(
                 Report::from(e).wrap_err("Failed to get manifests")
             )),
@@ -256,20 +256,9 @@ pub async fn update_package(
         .map(|analysis| (analysis.url, analysis.possible_installer_files))
         .collect::<HashMap<_, _>>();
 
-    let previous_installers = mem::take(&mut manifests.installer.installers)
-        .into_iter()
-        .map(|mut installer| {
-            if manifests.installer.r#type.is_some() {
-                installer.r#type = manifests.installer.r#type;
-            }
-            if manifests.installer.nested_installer_type.is_some() {
-                installer.nested_installer_type = manifests.installer.nested_installer_type;
-            }
-            if manifests.installer.scope.is_some() {
-                installer.scope = manifests.installer.scope;
-            }
-            installer
-        })
+    let previous_installers = manifests
+        .installer
+        .inherit_manifest_properties()
         .collect::<Vec<_>>();
 
     let url_counts = previous_installers
@@ -366,7 +355,7 @@ pub async fn update_package(
         manifests.default_locale.release_notes = Some(release_notes);
     }
 
-    let changes = manifests.create(&package_identifier, &package_version, None);
+    let changes = manifests.create(&package_identifier, &package_version, None, font);
 
     if !submit {
         return Ok(UpdatePackageResult {

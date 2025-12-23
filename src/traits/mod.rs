@@ -12,7 +12,7 @@ pub use name::Name;
 use regex::Regex;
 use winget_types::{
     Manifest, PackageVersion,
-    installer::Architecture,
+    installer::{Architecture, Installer, InstallerManifest},
     locale::{DefaultLocaleManifest, LocaleManifest, ReleaseNotes},
     url::ReleaseNotesUrl,
 };
@@ -69,6 +69,27 @@ pub trait IntoWingetArchitecture {
 impl IntoWingetArchitecture for PE {
     fn winget_architecture(&self) -> Architecture {
         Architecture::from_machine(self.machine())
+    }
+}
+
+pub trait InstallerManifestExt {
+    fn inherit_manifest_properties(&self) -> impl Iterator<Item = Installer> + '_;
+}
+
+impl InstallerManifestExt for InstallerManifest {
+    fn inherit_manifest_properties(&self) -> impl Iterator<Item = Installer> + '_ {
+        self.installers.iter().cloned().map(|mut installer| {
+            if self.r#type.is_some() {
+                installer.r#type = self.r#type;
+            }
+            if self.nested_installer_type.is_some() {
+                installer.nested_installer_type = self.nested_installer_type;
+            }
+            if self.scope.is_some() {
+                installer.scope = self.scope;
+            }
+            installer
+        })
     }
 }
 
