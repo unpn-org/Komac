@@ -4,16 +4,14 @@ use std::{
 };
 
 use camino::Utf8Path;
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::Result;
 use winget_types::{
     installer::Installer,
     locale::{Copyright, PackageName, Publisher},
+    utils::ValidFileExtensions,
 };
 
-use super::{
-    PeInfo,
-    extensions::{APPX, APPX_BUNDLE, EXE, MSI, MSIX, MSIX_BUNDLE, ZIP},
-};
+use super::PeInfo;
 use crate::analysis::{
     Installers,
     installers::{
@@ -38,16 +36,17 @@ pub struct Analyzer<'reader, R: Read + Seek> {
 
 impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
     pub fn new(reader: &'reader mut R, file_name: &str) -> Result<Self> {
-        let extension = Utf8Path::new(file_name)
-            .extension()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let extension = ValidFileExtensions::from_path(Utf8Path::new(file_name))?;
 
-        let installers = match extension.as_str() {
-            MSI => Msi::new(reader)?.installers(),
-            MSIX | APPX => Msix::new(reader)?.installers(),
-            MSIX_BUNDLE | APPX_BUNDLE => MsixBundle::new(reader)?.installers(),
-            ZIP => {
+        let installers = match extension {
+            ValidFileExtensions::Msi => Msi::new(reader)?.installers(),
+            ValidFileExtensions::Msix | ValidFileExtensions::Appx => {
+                Msix::new(reader)?.installers()
+            }
+            ValidFileExtensions::MsixBundle | ValidFileExtensions::AppxBundle => {
+                MsixBundle::new(reader)?.installers()
+            }
+            ValidFileExtensions::Zip => {
                 let mut scoped_zip = Zip::new(reader)?;
                 let installers = mem::take(&mut scoped_zip.installers);
                 return Ok(Self {
@@ -56,7 +55,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                     ..Self::default()
                 });
             }
-            EXE => {
+            ValidFileExtensions::Exe => {
                 let mut exe = Exe::new(reader)?;
                 return Ok(Self {
                     installers: exe.installers(),
@@ -78,7 +77,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                     ..Self::default()
                 });
             }
-            _ => bail!(r#"Unsupported file extension: "{extension}""#),
+            _ => unreachable!(),
         };
         Ok(Self {
             installers,
