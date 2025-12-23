@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeSet, HashMap},
     io,
     io::{Read, Seek, SeekFrom},
-    path::Path,
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -20,10 +19,8 @@ use zip::ZipArchive;
 
 use super::super::Analyzer;
 #[cfg(feature = "cli")]
+use crate::analysis::extensions::FileExtension;
 use crate::prompts::handle_inquire_error;
-
-const VALID_NESTED_FILE_EXTENSIONS: [&str; 6] =
-    ["msix", "msi", "appx", "exe", "msixbundle", "appxbundle"];
 
 const IGNORABLE_FOLDERS: [&str; 2] = ["__MACOSX", "resources"];
 
@@ -121,11 +118,8 @@ impl<R: Read + Seek> Zip<R> {
             .file_names()
             .flatten()
             .filter(|file_name| {
-                VALID_NESTED_FILE_EXTENSIONS.iter().any(|file_extension| {
-                    Path::new(&**file_name)
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case(file_extension))
-                })
+                FileExtension::from_path(Utf8Path::new(file_name))
+                    .is_ok_and(FileExtension::is_valid_nested_installer)
             })
             .filter(|file_name| {
                 // Ignore folders that the main executable is unlikely to be in
@@ -140,7 +134,7 @@ impl<R: Read + Seek> Zip<R> {
 
         debug!(?possible_installer_files);
 
-        let installer_type_counts = VALID_NESTED_FILE_EXTENSIONS
+        let installer_type_counts = FileExtension::ALL
             .iter()
             .map(|file_extension| {
                 (
@@ -149,7 +143,7 @@ impl<R: Read + Seek> Zip<R> {
                         .iter()
                         .filter(|file_name| {
                             file_name.extension().is_some_and(|extension| {
-                                extension.eq_ignore_ascii_case(file_extension)
+                                extension.eq_ignore_ascii_case(file_extension.as_str())
                             })
                         })
                         .count(),

@@ -102,6 +102,10 @@ pub struct UpdateVersion {
     #[arg(long, env)]
     skip_pr_check: bool,
 
+    /// Look for the package under fonts instead of probing manifests first
+    #[arg(long)]
+    font: bool,
+
     /// GitHub personal access token with the `public_repo` scope
     #[arg(short, long, env = "GITHUB_TOKEN", hide_env_values = true)]
     token: Option<SecretString>,
@@ -113,8 +117,9 @@ impl UpdateVersion {
         let github = GitHub::new(&token_manager)?;
 
         let mut package = github
-            .get_versioned_package(&self.identifier, &self.version)
+            .get_versioned_package(&self.identifier, &self.version, self.font.then_some(true))
             .await?;
+        let font = package.is_font();
 
         println!(
             "Latest version of {}: {}",
@@ -208,6 +213,7 @@ impl UpdateVersion {
             &self.identifier,
             &self.version,
             self.created_with.as_deref(),
+            font,
         );
 
         if self.dry_run {
@@ -223,7 +229,7 @@ impl UpdateVersion {
             self.exit,
         )?;
 
-        let package_path = PackagePath::new(&self.identifier, Some(&self.version), None);
+        let package_path = PackagePath::new(&self.identifier, Some(&self.version), None, font);
         if let Some(output) = self
             .output
             .as_ref()
