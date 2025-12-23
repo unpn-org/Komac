@@ -19,10 +19,7 @@ use tokio::{
 use winget_types::Sha256String;
 
 use super::{Download, DownloadedFile, Downloads, PreDownload};
-use crate::{
-    analysis::{extensions::FileExtension, installers::msix_family::app_installer::AppInstaller},
-    manifests::Url,
-};
+use crate::{analysis::installers::msix_family::app_installer::AppInstaller, manifests::Url};
 
 pub struct Downloader {
     client: Client,
@@ -180,13 +177,11 @@ impl Downloader {
                 .file_name(res.url(), res.headers().get(CONTENT_DISPOSITION))
                 .into_owned();
 
-            let file_extension = if let Some(extension) = Utf8Path::new(&file_name).extension() {
-                Some(extension.parse()?)
-            } else {
-                None
-            };
+            let file_extension = Utf8Path::new(&file_name).extension();
 
-            if file_extension.is_some_and(FileExtension::is_app_installer) {
+            if file_extension
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("appinstaller"))
+            {
                 *pre_download.url_mut() = AppInstaller::fetch_main_url(res).await?.into();
                 continue;
             }
