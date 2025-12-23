@@ -13,6 +13,7 @@ impl PackagePath {
         identifier: &PackageIdentifier,
         version: Option<&PackageVersion>,
         manifest_type: Option<&ManifestTypeWithLocale>,
+        font: bool,
     ) -> Self {
         let first_character = identifier.as_str().chars().next().map_or_else(
             || unreachable!("Package identifiers cannot be empty"),
@@ -23,7 +24,8 @@ impl PackagePath {
         );
 
         // manifests/p
-        let mut result = format!("manifests/{first_character}");
+        let root = if font { "fonts" } else { "manifests" };
+        let mut result = format!("{root}/{first_character}");
 
         // manifests/p/Package/Identifier
         for part in identifier.as_str().split('.') {
@@ -109,8 +111,18 @@ mod tests {
         let identifier = identifier.parse::<PackageIdentifier>().unwrap();
         let version = version.and_then(|version| version.parse().ok());
         assert_eq!(
-            PackagePath::new(&identifier, version.as_ref(), manifest_type.as_ref()).as_str(),
+            PackagePath::new(&identifier, version.as_ref(), manifest_type.as_ref(), false).as_str(),
             expected
         )
+    }
+
+    #[test]
+    fn font_package_path_uses_fonts_root() {
+        let identifier = "Package.Font".parse::<PackageIdentifier>().unwrap();
+
+        assert_eq!(
+            PackagePath::new(&identifier, None, None, true).as_str(),
+            "fonts/p/Package/Font"
+        );
     }
 }

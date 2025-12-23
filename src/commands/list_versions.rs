@@ -22,6 +22,10 @@ pub struct ListVersions {
     #[arg(long)]
     count: bool,
 
+    /// Look for the package under fonts instead of probing manifests first
+    #[arg(long)]
+    font: bool,
+
     /// GitHub personal access token with the `public_repo` scope
     #[arg(short, long, env = "GITHUB_TOKEN", hide_env_values = true)]
     token: Option<SecretString>,
@@ -48,7 +52,9 @@ impl ListVersions {
         let token_manager = TokenManager::handle(self.token).await?;
         let github = GitHub::new(token_manager)?;
 
-        let versions = github.get_versions(&self.package_identifier).await?;
+        let (versions, _) = github
+            .get_versions(&self.package_identifier, self.font.then_some(true))
+            .await?;
 
         let mut stdout_lock = anstream::stdout().lock();
         match self.output_type {
