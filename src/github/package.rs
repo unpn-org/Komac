@@ -34,6 +34,7 @@ pub struct Package<'identifier, 'version, V: VersionedState<'version>> {
     identifier: &'identifier PackageIdentifier,
     version: V::Version,
     versions: BTreeSet<PackageVersion>,
+    font: bool,
     pub manifests: Option<Manifests>,
     existing_pr: Option<PullRequest>,
 }
@@ -43,6 +44,11 @@ impl<'identifier, 'version, V: VersionedState<'version>> Package<'identifier, 'v
     #[expect(unused)]
     pub const fn identifier(&self) -> &'identifier PackageIdentifier {
         self.identifier
+    }
+
+    /// Returns whether the package is stored under the fonts root.
+    pub const fn is_font(&self) -> bool {
+        self.font
     }
 }
 
@@ -99,6 +105,7 @@ impl<'identifier> Package<'identifier, '_, Unversioned> {
             version,
             manifests: self.manifests,
             versions: self.versions,
+            font: self.font,
             existing_pr,
         })
     }
@@ -114,9 +121,10 @@ impl GitHub {
         &self,
         identifier: &'identifier PackageIdentifier,
         version: &'version PackageVersion,
+        font: Option<bool>,
     ) -> Result<Package<'identifier, 'version, Versioned>, GitHubError> {
-        let (versions, existing_pr) = try_join!(
-            self.get_versions(identifier),
+        let ((versions, font), existing_pr) = try_join!(
+            self.get_versions(identifier, font),
             self.get_existing_pull_request(identifier, version, false),
         )?;
 
@@ -124,11 +132,12 @@ impl GitHub {
             identifier,
             version,
             manifests: if let Some(version) = versions.last() {
-                Some(self.get_manifests(identifier, version).await?)
+                Some(self.get_manifests(identifier, version, font).await?)
             } else {
                 None
             },
             versions,
+            font,
             existing_pr,
         })
     }
@@ -137,10 +146,13 @@ impl GitHub {
     pub async fn get_package<'identifier>(
         &self,
         identifier: &'identifier PackageIdentifier,
+        font_hint: Option<bool>,
     ) -> Result<Package<'identifier, '_, Unversioned>, GitHubError> {
-        let versions = match self.get_versions(identifier).await {
-            Ok(versions) => versions,
-            Err(GitHubError::PackageNonExistent(_)) => BTreeSet::default(),
+        let (versions, font) = match self.get_versions(identifier, font_hint).await {
+            Ok(package) => package,
+            Err(GitHubError::PackageNonExistent(_)) => {
+                (BTreeSet::new(), font_hint.unwrap_or(false))
+            }
             Err(err) => return Err(err),
         };
 
@@ -148,11 +160,12 @@ impl GitHub {
             identifier,
             version: (),
             manifests: if let Some(version) = versions.last() {
-                Some(self.get_manifests(identifier, version).await?)
+                Some(self.get_manifests(identifier, version, font).await?)
             } else {
                 None
             },
             versions,
+            font,
             existing_pr: None,
         })
     }

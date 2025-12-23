@@ -15,7 +15,7 @@ use super::PeInfo;
 use crate::analysis::{
     Installers,
     installers::{
-        Exe, Msi, Zip,
+        Exe, Font, Msi, Zip,
         msix_family::{Msix, bundle::MsixBundle},
     },
 };
@@ -35,7 +35,11 @@ pub struct Analyzer<'reader, R: Read + Seek> {
 }
 
 impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
-    pub fn new(reader: &'reader mut R, file_name: &str) -> Result<Self> {
+    pub(crate) fn new(
+        reader: &'reader mut R,
+        file_name: &str,
+        font_analysis: FontAnalysis,
+    ) -> Result<Self> {
         let path = Utf8Path::new(file_name);
         if path
             .extension()
@@ -86,7 +90,11 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                     ..Self::default()
                 });
             }
-            _ => unreachable!(),
+            ValidFileExtensions::Fnt
+            | ValidFileExtensions::Otc
+            | ValidFileExtensions::Otf
+            | ValidFileExtensions::Ttc
+            | ValidFileExtensions::Ttf => Font::new(reader)?.installers(),
         };
         Ok(Self {
             installers,

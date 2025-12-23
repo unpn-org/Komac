@@ -31,7 +31,7 @@ use winget_types::{
 };
 
 use crate::{
-    commands::utils::{SPINNER_TICK_RATE, SubmitOption},
+    commands::utils::{SPINNER_TICK_RATE, SubmitOption, check_package_type},
     download::Downloader,
     github::{
         GITHUB_HOST,
@@ -145,6 +145,10 @@ pub struct NewVersion {
     #[arg(long, env)]
     skip_pr_check: bool,
 
+    /// Look for the package under fonts instead of probing manifests first
+    #[arg(long)]
+    font: bool,
+
     /// GitHub personal access token with the `public_repo` scope
     #[arg(short, long, env = "GITHUB_TOKEN", hide_env_values = true)]
     token: Option<SecretString>,
@@ -157,7 +161,9 @@ impl NewVersion {
 
         let identifier = required_prompt(self.identifier, None::<&str>)?;
 
-        let package = github.get_package(&identifier).await?;
+        let package = github
+            .get_package(&identifier, self.font.then_some(true))
+            .await?;
 
         if let Some(latest_version) = package.latest_version() {
             println!("Latest version of {identifier}: {latest_version}");
@@ -266,29 +272,35 @@ impl NewVersion {
         let mut installer_manifest = InstallerManifest {
             package_identifier: identifier.clone(),
             package_version: version.clone(),
-            install_modes: if installers
+            installers,
+            ..InstallerManifest::default()
+        };
+
+        let is_font = check_package_type(&installer_manifest)?;
+        if !is_font {
+            installer_manifest.install_modes = if installer_manifest
+                .installers
                 .iter()
                 .any(|installer| installer.r#type == Some(InstallerType::Inno))
             {
                 InstallModes::all()
             } else {
                 check_prompt::<InstallModes>()?
-            },
-            success_codes: list_prompt::<InstallerSuccessCode>()?,
-            upgrade_behavior: Some(radio_prompt::<UpgradeBehavior>()?),
-            commands: list_prompt::<Command>()?,
-            protocols: list_prompt::<Protocol>()?,
-            file_extensions: if installers
+            };
+            installer_manifest.success_codes = list_prompt::<InstallerSuccessCode>()?;
+            installer_manifest.upgrade_behavior = Some(radio_prompt::<UpgradeBehavior>()?);
+            installer_manifest.commands = list_prompt::<Command>()?;
+            installer_manifest.protocols = list_prompt::<Protocol>()?;
+            installer_manifest.file_extensions = if installer_manifest
+                .installers
                 .iter()
                 .all(|installer| installer.file_extensions.is_empty())
             {
                 list_prompt::<FileExtension>()?
             } else {
                 BTreeSet::new()
-            },
-            installers,
-            ..InstallerManifest::default()
-        };
+            };
+        }
 
         let mut github_values = match github_values.await? {
             Some(future) => Some(future?),
@@ -399,7 +411,8 @@ impl NewVersion {
             version: VersionManifest::new(identifier.clone(), version.clone(), default_locale),
         };
 
-        let mut changes = manifests.create(&identifier, &version, self.created_with.as_deref());
+        let mut changes =
+            manifests.create(&identifier, &version, self.created_with.as_deref(), is_font);
 
         if self.dry_run {
             print_changes(changes.iter().map(Change::manifest));
@@ -408,7 +421,7 @@ impl NewVersion {
 
         let submit_option = SubmitOption::prompt(&mut changes, &identifier, &version, self.submit)?;
 
-        let package_path = PackagePath::new(&identifier, Some(&version), None);
+        let package_path = PackagePath::new(&identifier, Some(&version), None, is_font);
         if let Some(output) = self.output.map(|out| out.join(package_path.as_str())) {
             changes.write_to(output.as_path()).await?;
             println!(
