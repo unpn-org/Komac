@@ -133,18 +133,17 @@ pub async fn update_package(
 
     let replace = parse_replacement(options.replace)?;
 
-    match options.package_kind.as_deref() {
-        None | Some("auto" | "standard") => {}
-        Some("font") => {
-            return Err(invalid_arg("Font packages are not supported by this build").into());
-        }
+    let package_kind = match options.package_kind.as_deref() {
+        None | Some("auto") => None,
+        Some("standard") => Some(false),
+        Some("font") => Some(true),
         Some(kind) => {
             return Err(InvalidArgument(format!("Invalid package kind {kind:?}")).into());
         }
-    }
+    };
 
-    let versions = github
-        .get_versions(&package_identifier)
+    let (versions, font) = github
+        .get_versions(&package_identifier, package_kind)
         .await
         .wrap_err("Failed to get versions")?;
 
@@ -155,7 +154,7 @@ pub async fn update_package(
     let (mut manifests, mut github_values, mut download_results) = try_join!(
         async {
             github
-                .get_manifests(&package_identifier, latest_version)
+                .get_manifests(&package_identifier, latest_version, font)
                 .await
                 .wrap_err("Failed to get manifests")
         },
@@ -267,7 +266,7 @@ pub async fn update_package(
     // `optimize` sorts installers, so it must run after all installer mutations.
     manifests.installer.optimize();
 
-    let changes = manifests.create(&package_identifier, &package_version, None);
+    let changes = manifests.create(&package_identifier, &package_version, None, font);
 
     let generated_manifests = changes
         .iter()

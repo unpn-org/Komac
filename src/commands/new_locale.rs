@@ -135,7 +135,7 @@ impl NewLocale {
         let github = GitHub::new(&token_manager)?;
 
         let package_identifier = required_prompt(self.package_identifier.take(), None::<&str>)?;
-        let versions = github.get_versions(&package_identifier).await?;
+        let (versions, font) = github.get_versions(&package_identifier, None).await?;
         let latest_version = versions.last().unwrap_or_else(|| unreachable!());
 
         println!("Latest version of {package_identifier}: {latest_version}");
@@ -161,7 +161,7 @@ impl NewLocale {
         let package_locale = required_prompt(self.package_locale.take(), None::<&str>)?;
 
         let mut manifests = github
-            .get_manifests(&package_identifier, &package_version)
+            .get_manifests(&package_identifier, &package_version, font)
             .await?;
 
         validate_new_locale(&manifests, &package_locale)?;
@@ -174,7 +174,8 @@ impl NewLocale {
         )?;
         manifests.locales.push(locale_manifest);
 
-        let package_path = PackagePath::new(&package_identifier, Some(&package_version), None);
+        let package_path =
+            PackagePath::new(&package_identifier, Some(&package_version), None, font);
         let mut changes = new_locale_changes(
             &package_identifier,
             &manifests,
