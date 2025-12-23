@@ -10,15 +10,12 @@ use winget_types::{
     locale::{Copyright, PackageName, Publisher},
 };
 
-use super::extensions::FileExtension;
-use super::{
-    PeInfo,
-    extensions::{APPX, APPX_BUNDLE, EXE, MSI, MSIX, MSIX_BUNDLE, ZIP},
-};
+use super::PeInfo;
 use crate::analysis::{
     Installers,
+    extensions::FileExtension,
     installers::{
-        Exe, Msi, Zip,
+        Exe, Font, Msi, Zip,
         msix_family::{Msix, bundle::MsixBundle},
     },
 };
@@ -38,12 +35,18 @@ pub struct Analyzer<'reader, R: Read + Seek> {
 }
 
 impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
-    pub fn new(reader: &'reader mut R, file_name: &str) -> Result<Self> {
-        let installers = match Utf8Path::new(file_name)
-            .extension()
-            .unwrap_or_default()
-            .parse()?
-        {
+    pub(crate) fn new(
+        reader: &'reader mut R,
+        file_name: &str,
+        font_analysis: FontAnalysis,
+    ) -> Result<Self> {
+        let path = Utf8Path::new(file_name);
+        let extension = FileExtension::from_path(path)?;
+
+        let installers = match extension {
+            FileExtension::AppInstaller => {
+                bail!(".appinstaller files are not supported for the analyze command")
+            }
             FileExtension::Msi => Msi::new(reader)?.installers(),
             FileExtension::Msix | FileExtension::Appx => Msix::new(reader)?.installers(),
             FileExtension::MsixBundle | FileExtension::AppxBundle => {
@@ -80,11 +83,11 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                     ..Self::default()
                 });
             }
-            FileExtension::AppInstaller => {
-                // AppInstaller files will only reach this point from the analyze command as they
-                // are converted to an MSIX or MSIXBundle before downloading
-                bail!(".appinstaller files are not supported for the analyze command");
-            }
+            FileExtension::Fnt
+            | FileExtension::Otc
+            | FileExtension::Otf
+            | FileExtension::Ttc
+            | FileExtension::Ttf => Font::new(reader)?.installers(),
         };
         Ok(Self {
             installers,

@@ -27,16 +27,49 @@ pub struct GitTree {
 }
 
 impl GitHub {
+    /// Retrieves all available versions for a given package identifier.
+    ///
+    /// If `font` is `None`, this function first attempts to fetch versions from the manifest path.
+    /// If that fails, it tries the font path.
+    ///
+    /// Returns a tuple containing:
+    /// * `BTreeSet<PackageVersion>` - A set of all available package versions
+    /// * `bool` - `true` if the package is a font (found in the font path)
     pub async fn get_versions(
         &self,
         package_identifier: &PackageIdentifier,
-    ) -> Result<BTreeSet<PackageVersion>, GitHubError> {
+        font: Option<bool>,
+    ) -> Result<(BTreeSet<PackageVersion>, bool), GitHubError> {
+        if let Some(font) = font {
+            return self
+                .get_all_versions(
+                    MICROSOFT,
+                    WINGET_PKGS,
+                    PackagePath::new(package_identifier, None, None, font),
+                )
+                .await
+                .map(|versions| (versions, font))
+                .map_err(|_| GitHubError::PackageNonExistent(package_identifier.clone()));
+        }
+
+        if let Ok(versions) = self
+            .get_all_versions(
+                MICROSOFT,
+                WINGET_PKGS,
+                PackagePath::new(package_identifier, None, None, false),
+            )
+            .await
+        {
+            return Ok((versions, false));
+        }
+
         self.get_all_versions(
             MICROSOFT,
             WINGET_PKGS,
-            PackagePath::new(package_identifier, None, None),
+            PackagePath::new(package_identifier, None, None, true),
         )
         .await
+        .map(|versions| (versions, true))
         .map_err(|_| GitHubError::PackageNonExistent(package_identifier.clone()))
     }
 

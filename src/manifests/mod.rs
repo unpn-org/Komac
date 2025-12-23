@@ -1,6 +1,5 @@
 use std::{
-    fmt,
-    fmt::Display,
+    fmt::{self, Display},
     io::{StdoutLock, Write as IoWrite},
     sync::LazyLock,
 };
@@ -60,8 +59,9 @@ impl Manifests {
         identifier: &PackageIdentifier,
         version: &PackageVersion,
         created_with: Option<&str>,
+        font: bool,
     ) -> Changes {
-        let package_path = PackagePath::new(identifier, Some(version), None);
+        let package_path = PackagePath::new(identifier, Some(version), None, font);
 
         let mut path_content_map = vec![
             Change::new(
