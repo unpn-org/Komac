@@ -2,10 +2,12 @@ use std::fmt;
 
 use color_eyre::Result;
 use inquire::Select;
+use tracing::error;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use crate::{
-    editor::Editor,
+    editor::{Editor, EditorError, edit_externally},
+    environment::EDITOR,
     github::utils::pull_request::{Change, Changes},
     manifests::print_changes,
     prompts::handle_inquire_error,
@@ -41,10 +43,15 @@ impl SubmitOption {
                 .map_err(handle_inquire_error)?
             };
 
-            if submit_option.is_edit() {
-                Editor::new(changes).run()?;
-            } else {
+            if !submit_option.is_edit() {
                 break;
+            }
+
+            if let Err(error) = edit_externally(EDITOR.as_deref(), changes) {
+                if !matches!(error, EditorError::CommandEmpty) {
+                    error!("External editor failed to load: {}", error);
+                }
+                Editor::new(changes).run()?;
             }
         }
 
