@@ -1,5 +1,6 @@
-use std::{borrow::Cow, fmt::Display, io, ops::Add};
+use std::{borrow::Cow, fmt::Display, fs, io, ops::Add, process::Command};
 
+use camino::Utf8Path;
 use ratatui::{
     DefaultTerminal,
     layout::{Constraint, Direction, Layout},
@@ -8,6 +9,84 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use ratatui_textarea::{CursorMove, DataCursor, Input, Key, TextArea};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum EditorError {
+    #[error("command is empty")]
+    CommandEmpty,
+    #[error("process exited with code {0}")]
+    NonZeroExit(i32),
+    #[error("process terminated by signal")]
+    SignalTermination(),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+pub fn edit_externally(editor: Option<&str>, changes: &mut Changes) -> Result<(), EditorError> {
+    let Some(editor) = editor else {
+        return Err(EditorError::CommandEmpty);
+    };
+
+    let temp_dir = tempfile::tempdir()?;
+
+    let file_paths: Vec<_> = changes
+        .iter()
+        .map(|change| {
+            let file_name = Utf8Path::new(change.path())
+                .file_name()
+                .unwrap_or(change.path());
+            let file_path = temp_dir.path().join(file_name);
+            fs::write(&file_path, change.manifest().as_bytes())?;
+            Ok(file_path)
+        })
+        .collect::<io::Result<_>>()?;
+
+    println!("Waiting for your editor to close the files...");
+
+    #[cfg(windows)]
+    let status = {
+        // Command::new behavior is weird on Windows, spawn a shell to avoid that
+        let file_args = file_paths
+            .iter()
+            .map(|path| {
+                let escaped = path.to_string_lossy().replace('\'', "''");
+                format!("'{escaped}'")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!("{editor} {file_args}"))
+            .status()?
+    };
+
+    #[cfg(not(windows))]
+    let status = {
+        let mut parts = editor.split_whitespace();
+        let program = parts.next().ok_or(EditorError::CommandEmpty)?;
+
+        Command::new(program)
+            .args(parts)
+            .args(&file_paths)
+            .status()?
+    };
+
+    if !status.success() {
+        match status.code() {
+            Some(status) => return Err(EditorError::NonZeroExit(status)),
+            None => return Err(EditorError::SignalTermination()),
+        }
+    }
+
+    for (file_path, change) in file_paths.iter().zip(changes.iter_mut()) {
+        change.manifest = fs::read_to_string(file_path)?;
+    }
+
+    Ok(())
+}
 
 use crate::github::utils::pull_request::{Change, Changes};
 
