@@ -29,7 +29,7 @@ use crate::{
     download::Downloader,
     github::{GITHUB_HOST, client::GitHub},
     match_installers::{match_installers, unmatched_installers},
-    traits::path::NormalizePath,
+    traits::path::{LowercaseExtension, NormalizePath},
 };
 
 enum VersionSelector {
@@ -475,7 +475,7 @@ fn fix_relative_paths(
                         )
                     })
                     .map(|path| NestedInstallerFiles {
-                        relative_file_path: path.clone(),
+                        relative_file_path: path.lowercase_extension(),
                         ..nested_installer_file
                     })
             }

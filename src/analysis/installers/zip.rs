@@ -20,6 +20,7 @@ use zip::ZipArchive;
 use super::super::Analyzer;
 #[cfg(feature = "cli")]
 use crate::prompts::handle_inquire_error;
+use crate::traits::path::LowercaseExtension;
 
 const VALID_NESTED_FILE_EXTENSIONS: [&str; 6] =
     ["msix", "msi", "appx", "exe", "msixbundle", "appxbundle"];
@@ -167,7 +168,7 @@ impl<R: Read + Seek> Zip<R> {
         {
             let chosen_file_name = &possible_installer_files[0];
             nested_installer_files = BTreeSet::from([NestedInstallerFiles {
-                relative_file_path: chosen_file_name.clone(),
+                relative_file_path: chosen_file_name.lowercase_extension(),
                 portable_command_alias: None,
             }]);
             if let Ok(mut chosen_file) = zip.by_name(chosen_file_name.as_str()) {
@@ -238,7 +239,7 @@ impl<R: Read + Seek> Zip<R> {
                         } else {
                             None
                         },
-                        relative_file_path: path,
+                        relative_file_path: path.lowercase_extension(),
                     })
                 })
                 .collect::<Result<BTreeSet<_>>>()?;
@@ -287,7 +288,7 @@ impl<R: Read + Seek> Zip<R> {
 
                 let nested_analyzer = Analyzer::new(&mut temp_file, path.as_str())?;
                 let nested_installer_files = BTreeSet::from([NestedInstallerFiles {
-                    relative_file_path: path.clone(),
+                    relative_file_path: path.lowercase_extension(),
                     portable_command_alias: None,
                 }]);
                 let file_version = nested_analyzer.file_version;
