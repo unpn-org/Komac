@@ -14,6 +14,7 @@ use winget_types::{
 
 use crate::{
     match_installers::{match_installers, unmatched_installers},
+    traits::path::LowercaseExtension,
 };
 
 pub trait InstallerManifestExt {
@@ -159,7 +160,7 @@ fn fix_relative_paths(
                         )
                     })
                     .map(|path| NestedInstallerFiles {
-                        relative_file_path: path.clone(),
+                        relative_file_path: path.lowercase_extension(),
                         ..nested_installer_file
                     })
             }
