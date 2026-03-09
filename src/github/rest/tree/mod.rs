@@ -13,7 +13,7 @@ pub use r#type::TreeType;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use super::{
-    super::{GitHubError, MICROSOFT, WINGET_PKGS, client::GitHub, utils::PackagePath},
+    super::{GITHUB_REF, GitHubError, MICROSOFT, WINGET_PKGS, client::GitHub, utils::PackagePath},
     GITHUB_JSON_MIME, REST_API_URL, REST_API_VERSION, X_GITHUB_API_VERSION,
 };
 
@@ -54,7 +54,7 @@ impl GitHub {
         const SEPARATOR: char = '/';
 
         let endpoint = format!(
-            "{REST_API_URL}/repos/{owner}/{repo}/git/trees/HEAD:{path}?recursive={recursive}",
+            "{REST_API_URL}/repos/{owner}/{repo}/git/trees/{GITHUB_REF}:{path}?recursive={recursive}",
             recursive = true
         );
 
