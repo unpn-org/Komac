@@ -22,7 +22,7 @@ use super::{GitHubError, graphql::create_pull_request};
 use crate::{
     commands::{cleanup::MergeState, utils::SPINNER_TICK_RATE},
     github::{
-        MICROSOFT, WINGET_PKGS, WINGET_PKGS_FULL_NAME,
+        GITHUB_REF, MICROSOFT, WINGET_PKGS, WINGET_PKGS_FULL_NAME,
         graphql::{
             GRAPHQL_URL,
             create_commit::{FileAddition, FileDeletion},
@@ -134,11 +134,12 @@ impl GitHub {
         repo: &str,
         path: &PackagePath,
     ) -> Result<impl Iterator<Item = GitHubFile>, GitHubError> {
+        let expression = format!("{GITHUB_REF}:{path}");
         let GraphQlResponse { data, errors } = self
             .0
             .post(GRAPHQL_URL)
             .run_graphql(GetDirectoryContentWithText::build(
-                GetDirectoryContentVariables::new(&owner, &repo, &format!("HEAD:{path}")),
+                GetDirectoryContentVariables::new(&owner, &repo, &expression),
             ))
             .await?;
 
