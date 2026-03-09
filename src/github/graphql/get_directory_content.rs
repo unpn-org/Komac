@@ -8,6 +8,7 @@ use super::{
     super::{GitHubError, MICROSOFT, WINGET_PKGS, client::GitHub, utils::PackagePath},
     GRAPHQL_URL, GetFileContent, github_schema as schema,
 };
+use crate::github::GITHUB_REF;
 
 #[derive(cynic::QueryVariables)]
 pub struct GetDirectoryContentVariables<'a> {
@@ -92,7 +93,7 @@ impl GitHub {
             .run_graphql(GetFileContent::build(GetDirectoryContentVariables::new(
                 &owner,
                 &repo,
-                &format!("HEAD:{path}"),
+                &format!("{GITHUB_REF}:{path}"),
             )))
             .await?;
 
