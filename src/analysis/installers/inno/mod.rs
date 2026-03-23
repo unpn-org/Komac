@@ -39,10 +39,32 @@ impl Installers for InnoInner {
             .product_code()
             .filter(|code| !code.starts_with(CODE));
 
+        let app_versioned_name = self
+            .header
+            .app_versioned_name()
+            .filter(|code| !code.starts_with(CODE))
+            .map(str::to_owned)
+            .or_else(|| {
+                if self.version().major() >= 7 {
+                    Some(format!(
+                        "{} {}",
+                        self.header.app_name()?,
+                        self.header.app_version()?
+                    ))
+                } else {
+                    Some(format!(
+                        "{} version {}",
+                        self.header.app_name()?,
+                        self.header.app_version()?
+                    ))
+                }
+            });
+
         let display_name = self
             .header()
             .uninstall_name()
             .or_else(|| self.header().app_versioned_name())
+            .or(app_versioned_name.as_deref())
             .filter(|name| !name.starts_with(CODE));
 
         let publisher = self
