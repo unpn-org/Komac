@@ -47,8 +47,12 @@ pub struct PageInfo {
 #[cynic(graphql_type = "Ref")]
 pub struct PullRequestBranchRef {
     pub name: String,
-    #[arguments(first: 5)]
-    pub associated_pull_requests: PullRequestConnection,
+    #[cynic(rename = "associatedPullRequests", alias)]
+    #[arguments(first: 1, states: [OPEN])]
+    pub open_pull_requests: PullRequestConnection,
+    #[cynic(rename = "associatedPullRequests", alias)]
+    #[arguments(first: 1, states: [CLOSED, MERGED], orderBy: { field: CREATED_AT, direction: DESC })]
+    pub closed_or_merged_pull_requests: PullRequestConnection,
 }
 
 /// <https://docs.github.com/graphql/reference/objects#ref>
@@ -107,7 +111,17 @@ mod tests {
                 refs(first: 100, after: $cursor, refPrefix: "refs/heads/") {
                   nodes {
                     name
-                    associatedPullRequests(first: 5) {
+                    open_pull_requests: associatedPullRequests(first: 1, states: [OPEN]) {
+                      nodes {
+                        title
+                        url
+                        state
+                        repository {
+                          nameWithOwner
+                        }
+                      }
+                    }
+                    closed_or_merged_pull_requests: associatedPullRequests(first: 1, states: [CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}) {
                       nodes {
                         title
                         url
