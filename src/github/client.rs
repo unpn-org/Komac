@@ -345,14 +345,9 @@ impl GitHub {
             for branch in branches.into_iter().filter(|branch| {
                 branch.name != default_branch.name
                     && branch.open_pull_requests.total_count == 0
-                    && branch
-                        .associated_pull_requests
-                        .pull_requests
-                        .iter()
-                        .all(|pull_request| !pull_request.state.is_open())
             }) {
                 if let Some(pull_request) = branch
-                    .associated_pull_requests
+                    .closed_or_merged_pull_requests
                     .pull_requests
                     .into_iter()
                     .filter(|pull_request| match merge_state {
