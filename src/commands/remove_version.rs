@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 
 use anstream::println;
+use chrono::Local;
 use clap::Parser;
 use color_eyre::eyre::{Result, bail};
 use futures_util::TryFutureExt;
@@ -14,6 +15,7 @@ use tokio::try_join;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use crate::{
+    environment::CI,
     github::{WINGET_PKGS_FULL_NAME, client::GitHub},
     prompts::{handle_inquire_error, text::confirm_prompt},
     token::TokenManager,
@@ -92,6 +94,27 @@ impl RemoveVersion {
             "Latest version of {}: {latest_version}",
             &self.package_identifier
         );
+
+        if let Some(pull_request) = github
+            .get_existing_pull_request(&self.package_identifier, &self.package_version, false)
+            .await?
+            .filter(|pull_request| pull_request.is_open())
+        {
+            let created_at = pull_request.created_at.with_timezone(&Local);
+            println!(
+                "There is already {} pull request for {} {} that was created on {} at {}",
+                pull_request.state,
+                self.package_identifier,
+                self.package_version,
+                created_at.date_naive(),
+                created_at.time()
+            );
+            println!("{}", pull_request.url.blue());
+
+            if *CI || !confirm_prompt("Would you like to proceed?")? {
+                return Ok(());
+            }
+        }
 
         let deletion_reason = match self.deletion_reason {
             Some(reason) => reason,
