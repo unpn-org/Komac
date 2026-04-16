@@ -7,6 +7,8 @@ use serde::Serialize;
 use tokio::{fs, fs::File, io::AsyncWriteExt};
 use winget_types::Manifest;
 
+use crate::manifests::to_yaml_string;
+
 #[derive(Clone)]
 pub struct Changes(Vec<Change>);
 
@@ -66,7 +68,9 @@ impl Change {
         let _ = writeln!(result, "{} v{}", crate_name!(), crate_version!());
         let _ = writeln!(result, "# yaml-language-server: $schema={}", M::SCHEMA);
         let _ = writeln!(result);
-        let _ = write!(result, "{}", serde_yaml::to_string(manifest).unwrap());
+        let yaml = to_yaml_string(manifest)
+            .unwrap_or_else(|error| unreachable!("manifest serialization failed: {error}"));
+        let _ = write!(result, "{yaml}");
 
         Self {
             path: path.into(),
