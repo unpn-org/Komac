@@ -119,7 +119,7 @@ impl GitHub {
         let version_manifest = content
             .iter()
             .find(|file| is_manifest_file::<VersionManifest>(&file.name, identifier, None))
-            .map(|file| serde_yaml::from_str::<VersionManifest>(&file.text))
+            .map(|file| serde_saphyr::from_str::<VersionManifest>(&file.text))
             .ok_or_else(|| GitHubError::ManifestNotFound {
                 r#type: ManifestType::Version,
                 path: full_package_path.clone(),
@@ -134,8 +134,8 @@ impl GitHub {
                     Some(version_manifest.default_locale()),
                 )
             })
-            .map(|file| serde_yaml::from_str::<LocaleManifest>(&file.text))
-            .collect::<serde_yaml::Result<_>>()?;
+            .map(|file| serde_saphyr::from_str::<LocaleManifest>(&file.text))
+            .collect::<Result<_, _>>()?;
 
         let default_locale_manifest = content
             .iter()
@@ -146,7 +146,7 @@ impl GitHub {
                     Some(version_manifest.default_locale()),
                 )
             })
-            .map(|file| serde_yaml::from_str::<DefaultLocaleManifest>(&file.text))
+            .map(|file| serde_saphyr::from_str::<DefaultLocaleManifest>(&file.text))
             .ok_or_else(|| GitHubError::ManifestNotFound {
                 r#type: ManifestType::DefaultLocale,
                 path: full_package_path.clone(),
@@ -155,7 +155,7 @@ impl GitHub {
         let installer_manifest = content
             .into_iter()
             .find(|file| is_manifest_file::<InstallerManifest>(&file.name, identifier, None))
-            .map(|file| serde_yaml::from_str::<InstallerManifest>(&file.text))
+            .map(|file| serde_saphyr::from_str::<InstallerManifest>(&file.text))
             .ok_or_else(|| GitHubError::ManifestNotFound {
                 r#type: ManifestType::Installer,
                 path: full_package_path.clone(),
@@ -207,7 +207,7 @@ impl GitHub {
     ) -> Result<T, GitHubError> {
         let path = PackagePath::new(identifier, Some(version), Some(&manifest_type));
         let content = self.get_file_content(MICROSOFT, WINGET_PKGS, &path).await?;
-        let manifest = serde_yaml::from_str::<T>(&content)?;
+        let manifest = serde_saphyr::from_str::<T>(&content)?;
         Ok(manifest)
     }
 
