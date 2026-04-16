@@ -25,7 +25,7 @@ pub enum GitHubError {
     #[error(transparent)]
     CynicRequest(#[from] CynicReqwestError),
     #[error(transparent)]
-    YamlError(#[from] serde_yaml::Error),
+    YamlError(#[from] serde_saphyr::Error),
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
 }
