@@ -11,7 +11,10 @@ use color_eyre::{Result, eyre::ensure};
 use sha2::{Digest, Sha256, digest::Output};
 use winget_types::Sha256String;
 
-use crate::{analysis::Analyzer, manifests::print_manifest};
+use crate::{
+    analysis::Analyzer,
+    manifests::{print_manifest, to_yaml_string},
+};
 
 /// Analyzes a file and outputs information about it
 #[derive(Parser)]
@@ -57,8 +60,8 @@ impl Analyze {
             }
         }
         let yaml = match installers.as_slice() {
-            [installer] => serde_yaml::to_string(installer)?,
-            installers => serde_yaml::to_string(installers)?,
+            [installer] => to_yaml_string(installer)?,
+            installers => to_yaml_string(&installers)?,
         };
         let mut lock = stdout().lock();
         print_manifest(&mut lock, &yaml);
