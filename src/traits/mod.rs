@@ -211,6 +211,7 @@ impl FromHtml for ReleaseNotes {
             let normalized_text = COMPARE_RANGE_LINE_REGEX.replace_all(&text, "");
             let normalized_text = NEWLINE_REGEX.replace_all(&normalized_text, "\n");
             let normalized_text = add_section_spacing(&normalized_text);
+            let normalized_text = normalized_text.replace("\\r\\n", "\n").replace("\\n", "\n");
             Self::new(normalized_text.trim()).ok()
         })
     }
