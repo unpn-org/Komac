@@ -7,6 +7,7 @@ use std::{
 
 use anstream::AutoStream;
 use owo_colors::{OwoColorize, Style, colors::css::SlateGrey};
+use serde::Serialize;
 use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter};
 pub use url::Url;
 use winget_types::{
@@ -190,5 +191,72 @@ pub fn print_manifest(lock: &mut AutoStream<StdoutLock<'static>>, manifest: &str
             Ok(HighlightEvent::HighlightEnd) => current_highlight = None,
             Err(_) => {}
         }
+    }
+}
+
+pub fn to_yaml_string<T>(value: &T) -> std::result::Result<String, serde_saphyr::ser::Error>
+where
+    T: Serialize,
+{
+    serde_saphyr::to_string_with_options(
+        value,
+        serde_saphyr::ser_options! {
+            // Use YAML 1.2 scalar rules so dotted versions stay plain.
+            yaml_12: true,
+            no_lang_directive: true,
+            // Match serde-yaml behavior: only multiline strings should use block scalar styles.
+            folded_wrap_chars: usize::MAX,
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use serde_json::{Value, json};
+    use winget_types::{PackageIdentifier, PackageVersion, installer::PackageDependency};
+
+    use super::to_yaml_string;
+
+    #[rstest]
+    #[case("7.0.0")]
+    #[case("1.2.3.4")]
+    #[case("1.0.0-rc.1")]
+    #[case("2.0.0+build.5")]
+    fn dependency_versions_stay_plain(#[case] version: &str) {
+        let dependency = PackageDependency::new_with_min_version(
+            "Example.App".parse::<PackageIdentifier>().unwrap(),
+            version.parse::<PackageVersion>().unwrap(),
+        );
+        let manifest = json!({
+            "Dependencies": {
+                "PackageDependencies": [dependency],
+            },
+        });
+
+        assert_eq!(
+            to_yaml_string(&manifest).unwrap(),
+            format!(
+                "Dependencies:\n  PackageDependencies:\n  - PackageIdentifier: Example.App\n    MinimumVersion: {version}\n"
+            ),
+        );
+    }
+
+    #[rstest]
+    #[case("7")]
+    #[case("7.0")]
+    #[case("1e3")]
+    #[case(".inf")]
+    #[case("true")]
+    #[case("false")]
+    #[case("null")]
+    #[case("~")]
+    #[case("")]
+    fn ambiguous_strings_keep_their_type(#[case] value: &str) {
+        let manifest = json!({ "Value": value });
+        let yaml = to_yaml_string(&manifest).unwrap();
+
+        assert_eq!(yaml, format!("Value: '{value}'\n"));
+        assert_eq!(serde_saphyr::from_str::<Value>(&yaml).unwrap(), manifest);
     }
 }
