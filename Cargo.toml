@@ -85,9 +85,8 @@ secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] } # Anthelion
 serde_with = "3.23.0"
-serde-saphyr = "1.0.0-rc.1" # Anthelion
-serde_yaml = { package = "yaml_serde", version = "0.10.7" }
-sevenz-rust2 = "0.23.0"
+serde-saphyr = "1.2.0" # Anthelion
+sevenz-rust2 = "0.22.2"
 sha2 = "0.11.0"
 strsim = "0.11.1"
 strum = { version = "0.28.0", features = ["derive"] }
@@ -104,7 +103,7 @@ typed-path = { version = "0.12.3", features = ["serde"] }
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.26.1", features = ["serde", "v4"] }
 walkdir = "2.5.0"
-winget-types = { version = "0.5.2", features = ["serde", "std", "chrono"] }
+winget-types = { version = "0.5.2", features = ["serde", "std", "chrono", "serde-saphyr"] } # Anthelion
 zerocopy = { version = "0.8.57", features = ["derive", "std"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate", "deflate64"] }
 # Anthelion Start
@@ -150,6 +149,7 @@ crate-type = ["cdylib"]
 [patch.crates-io]
 winget-types = { git = "https://github.com/UnownPlain/winget-types.git", branch = "anthelion" }
 typed-path = { git = "https://github.com/chipsenkbeil/typed-path.git", branch = "main" }
+serde-saphyr = { git = "https://github.com/UnownPlain/serde-saphyr.git", branch = "anthelion" }
 # Anthelion End
 
 [dev-dependencies]

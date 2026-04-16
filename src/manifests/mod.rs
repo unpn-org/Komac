@@ -7,6 +7,7 @@ use std::{
 
 use anstream::AutoStream;
 use owo_colors::{OwoColorize, Style, colors::css::SlateGrey};
+use serde::Serialize;
 use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter};
 pub use url::Url;
 use winget_types::{
@@ -191,4 +192,17 @@ pub fn print_manifest(lock: &mut AutoStream<StdoutLock<'static>>, manifest: &str
             Err(_) => {}
         }
     }
+}
+
+pub fn to_yaml_string<T>(value: &T) -> std::result::Result<String, serde_saphyr::ser::Error>
+where
+    T: Serialize,
+{
+    serde_saphyr::to_string_with_options(
+        value,
+        serde_saphyr::ser_options! {
+            // Match serde-yaml behavior: only multiline strings should use block scalar styles.
+            folded_wrap_chars: usize::MAX,
+        },
+    )
 }
