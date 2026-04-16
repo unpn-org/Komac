@@ -70,15 +70,15 @@ impl Submit {
 
                 // Deserialize the manifest into just the manifest type so that it can be determined
                 // which manifest to properly deserialize into
-                let manifest = match serde_yaml::from_str::<GenericManifest>(&manifest)?.r#type {
+                let manifest = match serde_saphyr::from_str::<GenericManifest>(&manifest)?.r#type {
                     ManifestType::Installer => {
-                        Manifest::Installer(serde_yaml::from_str(&manifest)?)
+                        Manifest::Installer(serde_saphyr::from_str(&manifest)?)
                     }
                     ManifestType::DefaultLocale => {
-                        Manifest::DefaultLocale(serde_yaml::from_str(&manifest)?)
+                        Manifest::DefaultLocale(serde_saphyr::from_str(&manifest)?)
                     }
-                    ManifestType::Locale => Manifest::Locale(serde_yaml::from_str(&manifest)?),
-                    ManifestType::Version => Manifest::Version(serde_yaml::from_str(&manifest)?),
+                    ManifestType::Locale => Manifest::Locale(serde_saphyr::from_str(&manifest)?),
+                    ManifestType::Version => Manifest::Version(serde_saphyr::from_str(&manifest)?),
                 };
                 Ok::<Manifest, eyre::Error>(manifest)
             })

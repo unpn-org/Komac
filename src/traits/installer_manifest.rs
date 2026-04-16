@@ -185,13 +185,13 @@ mod tests {
     };
 
     use rstest::rstest;
-    use serde_yaml::to_string as to_yaml_string;
     use winget_types::installer::{
         Architecture, Installer, InstallerManifest, InstallerType, NestedInstallerFiles,
         NestedInstallerType, Scope, Switches, UpgradeBehavior,
     };
 
     use super::{InstallerManifestExt, fix_relative_paths, merge_installer};
+    use crate::manifests::to_yaml_string;
 
     #[rstest]
     #[case(InstallerType::Msi)]
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn update_preserves_all_root_installer_properties() {
-        let properties: serde_json::Value = serde_yaml::from_str(indoc::indoc! {r#"
+        let properties: serde_json::Value = serde_saphyr::from_str(indoc::indoc! {r#"
             InstallerLocale: en-US
             Platform: [Windows.Desktop]
             MinimumOSVersion: 10.0.19041.0
@@ -761,7 +761,7 @@ mod tests {
             r#type: Some(InstallerType::Nullsoft),
             scope: Some(Scope::Machine),
             url: INSTALLER_URL.parse().unwrap(),
-            sha_256: serde_yaml::from_str(INSTALLER_SHA_256).unwrap(),
+            sha_256: serde_saphyr::from_str(INSTALLER_SHA_256).unwrap(),
             ..Installer::default()
         };
         let mut manifest = InstallerManifest {
