@@ -56,7 +56,9 @@ impl ListVersions {
                 pretty_json: true, ..
             } => serde_json::to_writer_pretty(&mut stdout_lock, &versions)?,
             OutputType { json: true, .. } => serde_json::to_writer(&mut stdout_lock, &versions)?,
-            OutputType { yaml: true, .. } => serde_yaml::to_writer(&mut stdout_lock, &versions)?,
+            OutputType { yaml: true, .. } => {
+                serde_saphyr::to_io_writer(&mut stdout_lock, &versions)?;
+            }
             _ => {
                 for version in &versions {
                     writeln!(&mut stdout_lock, "{version}")?;

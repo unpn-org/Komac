@@ -167,13 +167,13 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use rstest::rstest;
-    use serde_yaml::to_string as to_yaml_string;
     use winget_types::installer::{
         Architecture, Installer, InstallerManifest, InstallerType, NestedInstallerFiles,
         NestedInstallerType, Scope, Switches, UpgradeBehavior,
     };
 
     use super::{InstallerManifestExt, merge_installer};
+    use crate::manifests::to_yaml_string;
 
     #[test]
     fn mixed_installer_types_preserve_root_properties() {
@@ -473,7 +473,7 @@ mod tests {
             r#type: Some(InstallerType::Nullsoft),
             scope: Some(Scope::Machine),
             url: INSTALLER_URL.parse().unwrap(),
-            sha_256: serde_yaml::from_str(INSTALLER_SHA_256).unwrap(),
+            sha_256: serde_saphyr::from_str(INSTALLER_SHA_256).unwrap(),
             ..Installer::default()
         };
         let mut manifest = InstallerManifest {
