@@ -275,7 +275,9 @@ impl Installers for Msi {
             } else {
                 InstallerType::Msi
             }),
-            scope: self.find_scope(),
+            // User scope should not be set for MSI installers until the below issue is fixed
+            // https://github.com/microsoft/winget-cli/issues/3011
+            scope: self.find_scope().filter(|scope| !scope.is_user()),
             switches: self.install_location_switches(),
             product_code: product_code.map(str::to_owned),
             apps_and_features_entries: if product_name.is_some()
