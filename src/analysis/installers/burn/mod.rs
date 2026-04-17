@@ -234,11 +234,14 @@ impl Installers for Burn {
         vec![Installer {
             architecture: self.architecture,
             r#type: Some(InstallerType::Burn),
+            // User scope should not be set for MSI installers until the below issue is fixed
+            // https://github.com/microsoft/winget-cli/issues/3011
             scope: match manifest.registration.scope() {
                 WixBundleScope::Machine => Some(Scope::Machine),
                 WixBundleScope::User => Some(Scope::User),
                 WixBundleScope::MachineOrUser | WixBundleScope::UserOrMachine => None,
-            },
+            }
+            .filter(|scope| !scope.is_user()),
             apps_and_features_entries,
             installation_metadata: manifest
                 .variables
