@@ -2329,7 +2329,7 @@ dependencies = [
  "base64ct",
  "bitflags 2.13.2",
  "bon",
- "bzip2",
+ "bytes",
  "cab",
  "camino",
  "chrono",
