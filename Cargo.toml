@@ -42,7 +42,6 @@ base64ct = { version = "1.8.3", features = ["std"] }
 bitflags = "2.13.1"
 bon = "3.10.0"
 bytes = "1.12.1"
-bzip2 = "0.6.1"
 cab = "0.6.0"
 camino = { version = "1.2.5", features = ["serde1"] }
 chrono = { version = "0.4.45", features = ["serde"] }
