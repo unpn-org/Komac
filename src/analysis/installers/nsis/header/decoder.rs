@@ -4,9 +4,12 @@ use bzip2::read::BzDecoder;
 use flate2::read::ZlibDecoder;
 use liblzma::read::XzDecoder;
 
+use super::nsis_bzip2;
+
 pub enum Decoder<R: Read + Seek> {
     Lzma(XzDecoder<R>),
     BZip2(BzDecoder<R>),
+    NsisBZip2(nsis_bzip2::Decoder<R>),
     Zlib(ZlibDecoder<R>),
     None(R),
 }
@@ -16,6 +19,7 @@ impl<R: Read + Seek> Decoder<R> {
         match self {
             Self::Lzma(reader) => reader.into_inner(),
             Self::BZip2(reader) => reader.into_inner(),
+            Self::NsisBZip2(reader) => reader.into_inner(),
             Self::Zlib(reader) => reader.into_inner(),
             Self::None(reader) => reader,
         }
@@ -27,6 +31,7 @@ impl<R: Read + Seek> Read for Decoder<R> {
         match self {
             Self::Lzma(reader) => reader.read(buf),
             Self::BZip2(reader) => reader.read(buf),
+            Self::NsisBZip2(reader) => reader.read(buf),
             Self::Zlib(reader) => reader.read(buf),
             Self::None(reader) => reader.read(buf),
         }
