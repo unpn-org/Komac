@@ -2343,7 +2343,6 @@ dependencies = [
  "bitflags 2.13.2",
  "bon",
  "bytes",
- "bzip2",
  "cab",
  "camino",
  "chrono",
