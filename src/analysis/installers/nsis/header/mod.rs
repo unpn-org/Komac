@@ -2,13 +2,13 @@ pub mod block;
 mod compression;
 mod decoder;
 pub mod flags;
+pub(super) mod nsis_bzip2;
 
 use std::{
     fmt, io,
     io::{Error, ErrorKind, Read, Seek},
 };
 
-use bzip2::read::BzDecoder;
 pub use compression::Compression;
 pub use decoder::Decoder;
 use flate2::{Decompress, read::ZlibDecoder};
@@ -246,12 +246,17 @@ impl Header {
 
         debug!(?compression, is_solid, compressed_header_size);
 
+        let expected_size = first_header.length_of_header() as usize;
         let mut decoder = match compression {
             Compression::Lzma(_) => {
                 let header = reader.read_t::<LzmaStreamHeader>()?;
                 Decoder::new_lzma1(reader, header)?
             }
-            Compression::BZip2 => Decoder::BZip2(BzDecoder::new(reader)),
+            Compression::BZip2 => Decoder::NsisBZip2(nsis_bzip2::Decoder::new(
+                reader,
+                (!is_solid).then_some(compressed_header_size as usize),
+                expected_size + if is_solid { size_of::<u32>() } else { 0 },
+            )?),
             Compression::Zlib => Decoder::Zlib(ZlibDecoder::new_with_decompress(
                 reader,
                 Decompress::new(false),
