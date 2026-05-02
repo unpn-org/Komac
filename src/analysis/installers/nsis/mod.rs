@@ -34,6 +34,7 @@ use winget_types::{
         Installer, InstallerType, Scope,
     },
 };
+use zerocopy::LE;
 
 use super::{
     super::extensions::EXE,
@@ -41,7 +42,7 @@ use super::{
         entry::{Entry, EntryError},
         file_system::FsEntry,
         first_header::FirstHeader,
-        header::{Compression, Decoder, Decompressed, Header},
+        header::{Compression, Decoder, Decompressed, Header, nsis_bzip2},
     },
     pe::{PE, utils::machine_from_exe_reader},
     utils::{LzmaStreamHeader, RELATIVE_PROGRAM_FILES_64, RELATIVE_TEMP_FOLDER},
@@ -146,6 +147,22 @@ impl Nsis {
 
         architecture = architecture
             .or_else(|| {
+                let mut has_32_bit_section = false;
+                let mut has_64_bit_section = false;
+
+                for section in header.blocks().sections(&decompressed_data) {
+                    let name = state.get_string(section.name_offset());
+                    has_32_bit_section |= name.contains("32Bit") || name.contains("32-bit");
+                    has_64_bit_section |= name.contains("64Bit") || name.contains("64-bit");
+                }
+
+                match (has_32_bit_section, has_64_bit_section) {
+                    (true, true) => Some(Architecture::X86),
+                    (false, true) => Some(Architecture::X64),
+                    _ => None,
+                }
+            })
+            .or_else(|| {
                 state
                     .variables
                     .install_dir()
@@ -169,6 +186,22 @@ impl Nsis {
                             position += data_offset
                                 + u64::from(non_solid_start_offset)
                                 + size_of::<u32>() as u64;
+                        }
+
+                        if !is_solid && compression == Compression::BZip2 {
+                            let reader = decoder.into_inner();
+                            reader
+                                .seek(SeekFrom::Start(position - size_of::<u32>() as u64))
+                                .ok()?;
+                            let compressed_size = reader.read_u32::<LE>().ok()? & !0x8000_0000;
+                            let decoder = nsis_bzip2::Decoder::new(
+                                reader,
+                                Some(compressed_size as usize),
+                                1 << 20,
+                            )
+                            .ok()?;
+                            let machine = machine_from_exe_reader(decoder).ok()?;
+                            return Some(Architecture::from_machine(machine));
                         }
 
                         let mut decoder = if is_solid {
