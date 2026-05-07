@@ -6,6 +6,7 @@ use std::{borrow::Borrow, collections::BTreeMap, fmt};
 use itertools::Itertools;
 pub use root::RegRoot;
 pub use r#type::RegType;
+use winget_types::installer::Scope;
 
 type Key = String;
 
@@ -52,6 +53,22 @@ impl Registry {
                     (parent == CURRENT_VERSION_UNINSTALL).then_some(product_code)
                 })
             })
+        })
+    }
+
+    pub fn product_code_scope(&self) -> Option<Scope> {
+        self.0.iter().find_map(|(root, keys)| {
+            keys.keys()
+                .any(|key| {
+                    key.rsplit_once('\\')
+                        .is_some_and(|(parent, _product_code)| parent == CURRENT_VERSION_UNINSTALL)
+                })
+                .then(|| match root {
+                    root if root.is_current_user() => Some(Scope::User),
+                    root if root.is_local_machine() => Some(Scope::Machine),
+                    _ => None,
+                })
+                .flatten()
         })
     }
 
