@@ -263,6 +263,19 @@ impl Nsis {
 impl Installers for Nsis {
     fn installers(&self) -> Vec<Installer> {
         let product_code = self.registry.product_code();
+        let detected_scope = self.registry.product_code_scope();
+        let install_directory_scope = self
+            .install_directory
+            .as_deref()
+            .and_then(Scope::from_install_directory);
+        let scope = match (detected_scope, install_directory_scope) {
+            (Some(detected_scope), Some(install_directory_scope))
+                if detected_scope != install_directory_scope =>
+            {
+                None
+            }
+            (detected_scope, install_directory_scope) => detected_scope.or(install_directory_scope),
+        };
         let display_name = self.display_name();
         let publisher = self.registry.get_value_by_name("Publisher");
         let display_version = self.registry.get_value_by_name("DisplayVersion");
@@ -278,10 +291,7 @@ impl Installers for Nsis {
             } else {
                 Some(InstallerType::Nullsoft)
             },
-            scope: self
-                .install_directory
-                .as_deref()
-                .and_then(Scope::from_install_directory),
+            scope,
             product_code: product_code.map(str::to_owned),
             apps_and_features_entries: if display_name.is_some()
                 || publisher.is_some()
@@ -313,5 +323,47 @@ impl Installers for Nsis {
         };
 
         vec![installer]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use registry::RegRoot;
+
+    use super::*;
+
+    const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Test.App";
+
+    fn nsis_with_scope_signals(root: RegRoot, install_directory: &str) -> Nsis {
+        let mut registry = Registry::new();
+        registry.insert_value(root, UNINSTALL_KEY, "DisplayName", "Test App");
+
+        Nsis {
+            architecture: Architecture::X64,
+            is_portable: false,
+            registry,
+            primary_language_id: 1033,
+            install_directory: Some(Utf8WindowsPathBuf::from(install_directory)),
+        }
+    }
+
+    #[test]
+    fn keeps_nsis_scope_when_detected_scope_matches_install_location_scope() {
+        let installer =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App")
+                .installers()
+                .remove(0);
+
+        assert_eq!(installer.scope, Some(Scope::Machine));
+    }
+
+    #[test]
+    fn does_not_set_nsis_scope_when_detected_scope_conflicts_with_install_location_scope() {
+        let installer =
+            nsis_with_scope_signals(RegRoot::HKEY_CURRENT_USER, r"%ProgramFiles%\Test App")
+                .installers()
+                .remove(0);
+
+        assert_eq!(installer.scope, None);
     }
 }
