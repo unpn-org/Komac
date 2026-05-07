@@ -61,6 +61,20 @@ impl RegRoot {
         self.0.get()
     }
 
+    pub fn is_current_user(self) -> bool {
+        matches!(
+            self,
+            Self::HKEY_CURRENT_USER | Self::HKEY_CURRENT_USER32 | Self::HKEY_CURRENT_USER64
+        )
+    }
+
+    pub fn is_local_machine(self) -> bool {
+        matches!(
+            self,
+            Self::HKEY_LOCAL_MACHINE | Self::HKEY_LOCAL_MACHINE32 | Self::HKEY_LOCAL_MACHINE64
+        )
+    }
+
     /// Returns the registry root as a static string slice if it's known, or `None` otherwise.
     const fn as_str(self) -> Option<&'static str> {
         match self {
