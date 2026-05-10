@@ -256,8 +256,8 @@ pub enum Entry {
     } = 40u32.to_le(),
     Execute {
         complete_command_line: I32<LE>,
-        wait_flag: I32<LE>,
         output_error_code: I32<LE>,
+        wait_flag: I32<LE>,
     } = 41u32.to_le(),
     GetFileTime {
         file: I32<LE>,
@@ -1080,10 +1080,17 @@ impl Entry {
             }
             Self::Execute {
                 complete_command_line,
-                wait_flag,
                 output_error_code,
+                wait_flag,
             } => {
                 debug!("Execute: {complete_command_line} {wait_flag} {output_error_code}");
+                if *wait_flag != I32::ZERO
+                    && let Ok(output_error_code) = usize::try_from(output_error_code.get())
+                {
+                    state
+                        .variables
+                        .insert(output_error_code, Cow::Borrowed("0"));
+                }
             }
             Self::GetFileTime {
                 file,
@@ -1117,6 +1124,18 @@ impl Entry {
                         && let Some(call) = state.stack.pop()
                     {
                         state.mock_caller.call(&call);
+                    } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
+                        // NSISdl::download consumes file, URL, and optional switches, then pushes
+                        // "success" or an error message. Treat downloads as successful so analysis
+                        // can continue past prerequisite bootstrapper steps.
+                        while state.stack.last().is_some_and(|arg| arg.starts_with('/')) {
+                            state.stack.pop();
+                        }
+                        if state.stack.len() >= 2 {
+                            state.stack.pop();
+                            state.stack.pop();
+                        }
+                        state.stack.push(Cow::Borrowed("success"));
                     }
                     debug!(
                         "CallInstDLL: {dll_file_name} {function}{}",
