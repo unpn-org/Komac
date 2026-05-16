@@ -151,28 +151,6 @@ impl Installers for Burn {
 
         let manifest = self.manifest.as_ref().unwrap_or_else(|| unreachable!());
 
-        let mut apps_and_features_entries = AppsAndFeaturesEntries::from(
-            AppsAndFeaturesEntry::builder()
-                .display_name(manifest.registration.arp.display_name())
-                .maybe_publisher(manifest.registration.arp.publisher())
-                .display_version(manifest.registration.arp.display_version().clone())
-                .product_code(
-                    manifest
-                        .registration
-                        .code()
-                        .encode_upper(&mut Uuid::encode_buffer())
-                        .to_string(),
-                )
-                .maybe_upgrade_code(manifest.related_bundles.first().map(|bundle| {
-                    bundle
-                        .code()
-                        .encode_upper(&mut Uuid::encode_buffer())
-                        .to_string()
-                }))
-                .installer_type(InstallerType::Burn)
-                .build(),
-        );
-
         let variables = manifest
             .variables
             .iter()
@@ -191,7 +169,7 @@ impl Installers for Burn {
             ])
             .collect::<HashMap<_, _>>();
 
-        for msi_package in manifest
+        let msi_packages = manifest
             .chain
             .packages
             .iter()
@@ -204,7 +182,31 @@ impl Installers for Burn {
                 !msi_package.is_arp_system_component()
             })
             .filter(|msi_package| msi_package.evaluate_install_condition(&variables))
-        {
+            .collect::<Vec<_>>();
+
+        let mut apps_and_features_entries = AppsAndFeaturesEntries::from(
+            AppsAndFeaturesEntry::builder()
+                .display_name(manifest.registration.arp.display_name())
+                .maybe_publisher(manifest.registration.arp.publisher())
+                .display_version(manifest.registration.arp.display_version().clone())
+                .product_code(
+                    manifest
+                        .registration
+                        .code()
+                        .encode_upper(&mut Uuid::encode_buffer())
+                        .to_string(),
+                )
+                .maybe_upgrade_code(manifest.related_bundles.first().map(|bundle| {
+                    bundle
+                        .code()
+                        .encode_upper(&mut Uuid::encode_buffer())
+                        .to_string()
+                }))
+                .maybe_installer_type((!msi_packages.is_empty()).then_some(InstallerType::Burn))
+                .build(),
+        );
+
+        for msi_package in msi_packages {
             apps_and_features_entries.push(
                 AppsAndFeaturesEntry::builder()
                     .maybe_display_name(
