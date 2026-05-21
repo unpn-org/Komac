@@ -274,10 +274,10 @@ pub async fn update_package(
 
     let url_counts = previous_installers
         .iter()
-        .map(|installer| installer.url.clone())
+        .map(|installer| &installer.url)
         .counts();
 
-    let matched_installers = match_installers(previous_installers, &installer_results);
+    let matched_installers = match_installers(&previous_installers, &installer_results);
     let unmatched_installers = unmatched_installers(&matched_installers, &installer_results);
     let mut installers = matched_installers
         .into_iter()
