@@ -60,7 +60,7 @@ impl GitHub {
 
         let response = self
             .0
-            .get(endpoint)
+            .get(&endpoint)
             .header(ACCEPT, GITHUB_JSON_MIME)
             .header(X_GITHUB_API_VERSION, REST_API_VERSION)
             .send()
