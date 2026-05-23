@@ -1,11 +1,11 @@
 use std::env;
 
 use color_eyre::eyre::eyre;
-use cynic::{GraphQlResponse, QueryBuilder, http::ReqwestExt};
+use cynic::{GraphQlResponse, QueryBuilder};
 
 use super::{
     super::{GitHubError, client::GitHub},
-    GRAPHQL_URL, github_schema as schema,
+    github_schema as schema,
 };
 
 /// <https://docs.github.com/graphql/reference/queries#viewer>
@@ -41,9 +41,7 @@ impl GitHub {
             Ok(login)
         } else {
             let GraphQlResponse { data, errors } = self
-                .0
-                .post(GRAPHQL_URL)
-                .run_graphql(GetCurrentUserLogin::build(()))
+                .run_graphql_with_retry(&GetCurrentUserLogin::build(()))
                 .await?;
 
             let Some(data) = data else {
