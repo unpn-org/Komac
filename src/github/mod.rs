@@ -5,6 +5,7 @@ pub mod graphql;
 mod package;
 mod repository;
 mod rest;
+pub(crate) mod retry;
 pub mod utils;
 
 pub use error::GitHubError;
