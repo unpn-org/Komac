@@ -2,12 +2,12 @@ use std::borrow::Cow;
 
 use bon::{Builder, bon};
 use color_eyre::eyre::eyre;
-use cynic::{GraphQlResponse, Id, MutationBuilder, http::ReqwestExt};
+use cynic::{GraphQlResponse, Id, MutationBuilder};
 use url::Url;
 
 use super::{
     super::{GitHubError, client::GitHub},
-    GRAPHQL_URL, github_schema as schema,
+    github_schema as schema,
     types::{Base64String, GitObjectId},
 };
 
@@ -140,9 +140,7 @@ impl GitHub {
         #[builder(default)] deletions: Vec<FileDeletion<'_>>,
     ) -> Result<Url, GitHubError> {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(CreateCommit::build(CreateCommitVariables {
+            .run_graphql_with_retry(&CreateCommit::build(CreateCommitVariables {
                 input: CreateCommitOnBranchInput::builder()
                     .branch(CommittableBranch::new(branch_id))
                     .expected_head_oid(head_sha)
