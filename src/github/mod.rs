@@ -4,6 +4,7 @@ pub mod graphql;
 #[cfg(feature = "cli")]
 mod package;
 mod rest;
+pub(crate) mod retry;
 pub mod utils;
 
 use std::{

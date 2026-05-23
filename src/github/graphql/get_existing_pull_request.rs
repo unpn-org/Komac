@@ -1,9 +1,9 @@
-use cynic::{QueryBuilder, http::ReqwestExt};
+use cynic::QueryBuilder;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use super::{
     super::{GitHubError, WINGET_PKGS_FULL_NAME, client::GitHub},
-    GRAPHQL_URL, github_schema as schema,
+    github_schema as schema,
     types::PullRequest,
 };
 
@@ -66,35 +66,34 @@ impl GitHub {
             "repo:{WINGET_PKGS_FULL_NAME} is:pull-request in:title {identifier} {version}{author_filter}"
         );
 
-        self.0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetExistingPullRequest::build(
+        let response = self
+            .run_graphql_with_retry(&GetExistingPullRequest::build(
                 GetExistingPullRequestVariables { query: &query },
             ))
-            .await
-            .map(|response| {
-                response.data?.into_pull_requests().find(|pull_request| {
-                    let title = &*pull_request.title;
-                    // Check that the identifier and version are used in their entirety and not
-                    // part of another package identifier or version. For example, ensuring we
-                    // match against "Microsoft.Excel" not "Microsoft.Excel.Beta", or "1.2.3"
-                    // and not "1.2.3-beta" as `in:title` in the query only does a 'contains'
-                    // rather than a word boundary match.
-                    [identifier.as_str(), version.as_str()]
-                        .into_iter()
-                        .all(|needle| {
-                            title.match_indices(needle).any(|(index, matched)| {
-                                let before = title[..index].chars().next_back();
-                                let after = title[index + matched.len()..].chars().next();
-                                // Check whether the characters before and after the identifier
-                                // are either None (at the boundary of the title) or whitespace
-                                before.is_none_or(char::is_whitespace)
-                                    && after.is_none_or(char::is_whitespace)
-                            })
+            .await?;
+
+        Ok(response.data.and_then(|data| {
+            data.into_pull_requests().find(|pull_request| {
+                let title = &*pull_request.title;
+                // Check that the identifier and version are used in their entirety and not
+                // part of another package identifier or version. For example, ensuring we
+                // match against "Microsoft.Excel" not "Microsoft.Excel.Beta", or "1.2.3"
+                // and not "1.2.3-beta" as `in:title` in the query only does a 'contains'
+                // rather than a word boundary match.
+                [identifier.as_str(), version.as_str()]
+                    .into_iter()
+                    .all(|needle| {
+                        title.match_indices(needle).any(|(index, matched)| {
+                            let before = title[..index].chars().next_back();
+                            let after = title[index + matched.len()..].chars().next();
+                            // Check whether the characters before and after the identifier
+                            // are either None (at the boundary of the title) or whitespace
+                            before.is_none_or(char::is_whitespace)
+                                && after.is_none_or(char::is_whitespace)
                         })
-                })
+                    })
             })
-            .map_err(GitHubError::CynicRequest)
+        }))
     }
 }
 

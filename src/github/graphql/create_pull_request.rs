@@ -2,13 +2,13 @@ use std::io::Write;
 
 use bon::Builder;
 use color_eyre::eyre::eyre;
-use cynic::{GraphQlResponse, MutationBuilder, http::ReqwestExt};
+use cynic::{GraphQlResponse, MutationBuilder};
 use owo_colors::OwoColorize;
 use url::Url;
 
 use super::{
     super::{GitHubError, client::GitHub},
-    GRAPHQL_URL, github_schema as schema,
+    github_schema as schema,
 };
 use crate::terminal::{Hyperlinkable, SUPPORTS_HYPERLINKS};
 
@@ -128,8 +128,7 @@ impl GitHub {
                 .build(),
         });
 
-        let GraphQlResponse { data, errors } =
-            self.0.post(GRAPHQL_URL).run_graphql(operation).await?;
+        let GraphQlResponse { data, errors } = self.run_graphql_with_retry(&operation).await?;
 
         data.and_then(|data| data.create_pull_request?.pull_request)
             .ok_or_else(|| {

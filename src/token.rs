@@ -4,12 +4,18 @@ use bon::bon;
 use color_eyre::eyre::Result;
 use inquire::{InquireError, Password, error::InquireResult, validator::Validation};
 use keyring_core::Entry;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client as ReqwestClient, StatusCode};
+use reqwest_middleware::ClientWithMiddleware;
 use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 use tokio::runtime::Handle;
 
-use crate::{environment::CI, http_headers::default_headers, prompts::handle_inquire_error};
+use crate::{
+    environment::CI,
+    github::retry::{client as retrying_client, is_connect_error},
+    http_headers::default_headers,
+    prompts::handle_inquire_error,
+};
 
 const GITHUB_API_ENDPOINT: &str = "https://api.github.com/octocat";
 
@@ -30,6 +36,8 @@ pub enum TokenError {
     #[error(transparent)]
     Request(#[from] reqwest::Error),
     #[error(transparent)]
+    RequestMiddleware(#[from] reqwest_middleware::Error),
+    #[error(transparent)]
     Inquire(#[from] InquireError),
 }
 
@@ -46,9 +54,11 @@ impl TokenManager {
         //     * In CI: if no token or if stored token is invalid -> error (never prompt).
         //     * Interactive: if no stored token or stored token is invalid -> prompt and store.
 
-        let client = Client::builder()
-            .default_headers(default_headers(None))
-            .build()?;
+        let client = retrying_client(
+            ReqwestClient::builder()
+                .default_headers(default_headers(None))
+                .build()?,
+        );
 
         let token_passed = token.is_some();
 
@@ -99,7 +109,7 @@ impl TokenManager {
 
     #[builder]
     pub fn prompt(
-        client: &Client,
+        client: &ClientWithMiddleware,
         #[builder(default = "Enter a GitHub token")] message: &str,
     ) -> InquireResult<SecretString> {
         tokio::task::block_in_place(|| {
@@ -121,7 +131,7 @@ impl TokenManager {
         })
     }
 
-    pub async fn validate(client: &Client, token: &str) -> Result<(), TokenError> {
+    pub async fn validate(client: &ClientWithMiddleware, token: &str) -> Result<(), TokenError> {
         match client
             .get(GITHUB_API_ENDPOINT)
             .bearer_auth(token)
@@ -133,7 +143,7 @@ impl TokenManager {
                 _ => Ok(()),
             },
             Err(error) => {
-                if error.is_connect() {
+                if is_connect_error(&error) {
                     Err(TokenError::FailedToConnect)
                 } else {
                     Err(error.into())

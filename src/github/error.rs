@@ -23,6 +23,8 @@ pub enum GitHubError {
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
     #[error(transparent)]
+    ReqwestMiddleware(#[from] reqwest_middleware::Error),
+    #[error(transparent)]
     CynicRequest(#[from] CynicReqwestError),
     #[error(transparent)]
     YamlError(#[from] serde_saphyr::Error),
