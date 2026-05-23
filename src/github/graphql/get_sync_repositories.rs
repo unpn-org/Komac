@@ -1,10 +1,10 @@
 //! Fetches upstream and a fork of it in one request, for `komac sync`.
 
 use color_eyre::eyre::eyre;
-use cynic::{GraphQlResponse, QueryBuilder, http::ReqwestExt};
+use cynic::{GraphQlResponse, QueryBuilder};
 use url::Url;
 
-use super::{GRAPHQL_URL, github_schema as schema};
+use super::github_schema as schema;
 use crate::github::{GitHubError, Repository, client::GitHub};
 
 /// Variables for looking up upstream and the authenticated user's fork of it.
@@ -93,9 +93,7 @@ impl GitHub {
         upstream: &Repository,
     ) -> Result<GetViewerFork, GitHubError> {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetViewerFork::build(ViewerForkVariables {
+            .run_graphql_with_retry(&GetViewerFork::build(ViewerForkVariables {
                 upstream_owner: upstream.owner(),
                 upstream_name: upstream.name(),
             }))
@@ -118,9 +116,7 @@ impl GitHub {
         fork: &Repository,
     ) -> Result<GetNamedFork, GitHubError> {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetNamedFork::build(NamedForkVariables {
+            .run_graphql_with_retry(&GetNamedFork::build(NamedForkVariables {
                 upstream_owner: upstream.owner(),
                 upstream_name: upstream.name(),
                 fork_owner: fork.owner(),

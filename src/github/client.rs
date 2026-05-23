@@ -10,12 +10,13 @@ use std::{
 use bitflags::bitflags;
 use bon::bon;
 use color_eyre::eyre::eyre;
-use cynic::{GraphQlResponse, Id, MutationBuilder, QueryBuilder, http::ReqwestExt};
+use cynic::{GraphQlResponse, Id, MutationBuilder, QueryBuilder};
 use futures_util::future::OptionFuture;
 use indexmap::IndexMap;
 use indicatif::ProgressBar;
 use itertools::Itertools;
 use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use secrecy::SecretString;
 use serde::de::DeserializeOwned;
 use winget_types::{
@@ -25,11 +26,10 @@ use winget_types::{
     url::{DecodedUrl, LicenseUrl, PackageUrl, PublisherSupportUrl, PublisherUrl, ReleaseNotesUrl},
 };
 
-use super::{GitHubError, graphql::create_pull_request};
+use super::{GitHubError, graphql::create_pull_request, retry::client};
 use crate::{
     github::{
         graphql::{
-            GRAPHQL_URL,
             create_commit::{FileAddition, FileDeletion},
             create_ref::{CreateRef, CreateRefVariables, Ref as CreateBranchRef},
             get_all_values::{GetAllValues, GetAllValuesGitObject, GetAllValuesVariables, Tree},
@@ -89,7 +89,7 @@ impl From<(bool, bool)> for MergeState {
 
 #[derive(Clone)]
 #[repr(transparent)]
-pub struct GitHub(pub(super) Client);
+pub struct GitHub(pub(super) ClientWithMiddleware);
 
 #[bon]
 impl GitHub {
@@ -105,11 +105,11 @@ impl GitHub {
     /// This is useful for public, read-only endpoints where a token merely
     /// raises the rate limit.
     pub fn with_optional_token(token: Option<&SecretString>) -> Result<Self, GitHubError> {
-        Ok(Self(
+        Ok(Self(client(
             Client::builder()
                 .default_headers(default_headers(token))
                 .build()?,
-        ))
+        )))
     }
 
     pub async fn get_manifests(
@@ -187,9 +187,7 @@ impl GitHub {
         path: &PackagePath,
     ) -> Result<impl Iterator<Item = GitHubFile>, GitHubError> {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetDirectoryContentWithText::build(
+            .run_graphql_with_retry(&GetDirectoryContentWithText::build(
                 GetDirectoryContentVariables::new(&owner, &repo, &format!("HEAD:{path}")),
             ))
             .await?;
@@ -241,9 +239,7 @@ impl GitHub {
         name: &str,
     ) -> Result<RepositoryData, GitHubError> {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetRepositoryInfo::build(RepositoryVariables::new(
+            .run_graphql_with_retry(&GetRepositoryInfo::build(RepositoryVariables::new(
                 owner, name,
             )))
             .await?;
@@ -286,12 +282,11 @@ impl GitHub {
         branch_name: &str,
         oid: GitObjectId,
     ) -> Result<CreateBranchRef, GitHubError> {
+        let ref_name = format!("refs/heads/{branch_name}");
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(CreateRef::build(
+            .run_graphql_with_retry(&CreateRef::build(
                 CreateRefVariables::builder()
-                    .name(&format!("refs/heads/{branch_name}"))
+                    .name(&ref_name)
                     .oid(oid)
                     .repository_id(fork_id)
                     .build(),
@@ -315,9 +310,7 @@ impl GitHub {
 
         loop {
             let GraphQlResponse { data, errors } = self
-                .0
-                .post(GRAPHQL_URL)
-                .run_graphql(GetBranches::build(GetBranchesVariables {
+                .run_graphql_with_retry(&GetBranches::build(GetBranchesVariables {
                     owner: user,
                     name: upstream().name(),
                     cursor: cursor.as_deref(),
@@ -381,9 +374,7 @@ impl GitHub {
         T: Into<String>,
     {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(UpdateRefs::build(UpdateRefsInput::new(
+            .run_graphql_with_retry(&UpdateRefs::build(UpdateRefsInput::new(
                 RefUpdate::delete_branches(branch_names),
                 repository_id,
             )))
@@ -425,9 +416,7 @@ impl GitHub {
         #[builder(into)] tag_name: Cow<'a, str>,
     ) -> Result<GitHubValues, GitHubError> {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetAllValues::build(GetAllValuesVariables {
+            .run_graphql_with_retry(&GetAllValues::build(GetAllValuesVariables {
                 name: &repo,
                 owner: &owner,
                 tag_name: &tag_name,

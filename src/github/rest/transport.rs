@@ -1,6 +1,7 @@
 //! Shared plumbing for GitHub REST API requests.
 
-use reqwest::{Method, RequestBuilder, header::ACCEPT};
+use reqwest::{Method, header::ACCEPT};
+use reqwest_middleware::RequestBuilder;
 use serde::de::DeserializeOwned;
 
 use super::{
