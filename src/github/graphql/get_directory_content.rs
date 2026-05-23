@@ -2,11 +2,11 @@ use std::fmt;
 
 use bon::bon;
 use color_eyre::eyre::eyre;
-use cynic::{GraphQlResponse, QueryBuilder, http::ReqwestExt};
+use cynic::{GraphQlResponse, QueryBuilder};
 
 use super::{
     super::{GitHubError, MICROSOFT, WINGET_PKGS, client::GitHub, utils::PackagePath},
-    GRAPHQL_URL, GetFileContent, github_schema as schema,
+    GetFileContent, github_schema as schema,
 };
 use crate::github::GITHUB_REF;
 
@@ -88,9 +88,7 @@ impl GitHub {
         P: fmt::Display,
     {
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetFileContent::build(GetDirectoryContentVariables::new(
+            .run_graphql_with_retry(&GetFileContent::build(GetDirectoryContentVariables::new(
                 &owner,
                 &repo,
                 &format!("{GITHUB_REF}:{path}"),
@@ -109,11 +107,10 @@ impl GitHub {
         #[builder(default = "HEAD")] branch_name: &str,
         path: &PackagePath,
     ) -> Result<impl Iterator<Item = String>, GitHubError> {
+        let expression = format!("{branch_name}:{path}");
         let GraphQlResponse { data, errors } = self
-            .0
-            .post(GRAPHQL_URL)
-            .run_graphql(GetDirectoryContent::build(
-                GetDirectoryContentVariables::new(&owner, &repo, &format!("{branch_name}:{path}")),
+            .run_graphql_with_retry(&GetDirectoryContent::build(
+                GetDirectoryContentVariables::new(&owner, &repo, &expression),
             ))
             .await?;
         let entries = data
