@@ -8,11 +8,12 @@ use anstream::stdout;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use color_eyre::{Result, eyre::ensure};
+use serde::Serialize;
 use sha2::{Digest, Sha256, digest::Output};
-use winget_types::Sha256String;
+use winget_types::{Sha256String, installer::Installer};
 
 use crate::{
-    analysis::Analyzer,
+    analysis::{Analyzer, PeInfo},
     manifests::{print_manifest, to_yaml_string},
 };
 
@@ -51,22 +52,52 @@ impl Analyze {
             .file_path
             .file_name()
             .unwrap_or_else(|| self.file_path.as_str());
-        let mut installers = Analyzer::new(&mut file, file_name)?.installers;
-        if self.hash {
-            file.seek(SeekFrom::Start(0))?;
-            let sha_256 = Sha256String::from_digest(&sha256_digest(file)?);
-            for installer in &mut installers {
+        let sha_256 = self
+            .hash
+            .then(|| {
+                let sha_256 = Sha256String::from_digest(&sha256_digest(&mut file)?);
+                file.seek(SeekFrom::Start(0))?;
+                Ok::<_, io::Error>(sha_256)
+            })
+            .transpose()?;
+
+        let mut analyzer = Analyzer::new(&mut file, file_name)?;
+        if let Some(sha_256) = sha_256 {
+            for installer in &mut analyzer.installers {
                 installer.sha_256 = sha_256.clone();
             }
         }
-        let yaml = match installers.as_slice() {
-            [installer] => to_yaml_string(installer)?,
-            installers => to_yaml_string(&installers)?,
+        let yaml = match (analyzer.pe_info.as_ref(), analyzer.installers.as_slice()) {
+            (Some(pe_info), [installer]) => {
+                to_yaml_string(&AnalyzeSingleOutput { pe_info, installer })?
+            }
+            (Some(pe_info), installers) => to_yaml_string(&AnalyzeMultiOutput {
+                pe_info,
+                installers,
+            })?,
+            (None, [installer]) => to_yaml_string(installer)?,
+            (None, installers) => to_yaml_string(&installers)?,
         };
         let mut lock = stdout().lock();
         print_manifest(&mut lock, &yaml);
         Ok(())
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct AnalyzeSingleOutput<'a> {
+    #[serde(rename = "PEInfo")]
+    pe_info: &'a PeInfo,
+    installer: &'a Installer,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct AnalyzeMultiOutput<'a> {
+    #[serde(rename = "PEInfo")]
+    pe_info: &'a PeInfo,
+    installers: &'a [Installer],
 }
 
 fn sha256_digest<R: Read>(mut reader: R) -> io::Result<Output<Sha256>> {
