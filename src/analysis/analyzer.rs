@@ -11,6 +11,10 @@ use winget_types::{
 };
 
 use super::extensions::FileExtension;
+use super::{
+    PeInfo,
+    extensions::{APPX, APPX_BUNDLE, EXE, MSI, MSIX, MSIX_BUNDLE, ZIP},
+};
 use crate::analysis::{
     Installers,
     installers::{
@@ -28,6 +32,7 @@ pub struct Analyzer<'reader, R: Read + Seek> {
     pub file_version: Option<String>,
     #[allow(dead_code)]
     pub product_version: Option<String>,
+    pub pe_info: Option<PeInfo>,
     pub installers: Vec<Installer>,
     pub zip: Option<Zip<&'reader mut R>>,
 }
@@ -71,6 +76,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                         .and_then(|company_name| Publisher::new(company_name).ok()),
                     file_version: exe.file_version.take(),
                     product_version: exe.product_version.take(),
+                    pe_info: exe.pe_info.take(),
                     ..Self::default()
                 });
             }
@@ -101,6 +107,7 @@ impl<R: Read + Seek> Default for Analyzer<'_, R> {
             publisher: None,
             file_version: None,
             product_version: None,
+            pe_info: None,
             installers: Vec::default(),
             zip: None,
         }
