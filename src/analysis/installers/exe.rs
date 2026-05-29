@@ -6,12 +6,15 @@ use winget_types::installer::{Installer, InstallerType};
 
 use super::{super::Installers, AdvancedInstaller, Burn, Nsis, Squirrel};
 use crate::{
-    analysis::installers::{
-        advanced::AdvancedInstallerError,
-        burn::BurnError,
-        nsis::NsisError,
-        pe::{PE, VSVersionInfo},
-        squirrel::SquirrelError,
+    analysis::{
+        PeInfo,
+        installers::{
+            advanced::AdvancedInstallerError,
+            burn::BurnError,
+            nsis::NsisError,
+            pe::{PE, VSVersionInfo},
+            squirrel::SquirrelError,
+        },
     },
     traits::IntoWingetArchitecture,
 };
@@ -27,6 +30,7 @@ pub struct Exe {
     pub company_name: Option<String>,
     pub file_version: Option<String>,
     pub product_version: Option<String>,
+    pub pe_info: Option<PeInfo>,
 }
 
 pub enum ExeType {
@@ -46,6 +50,7 @@ impl Exe {
         let vs_version_info = vs_version_info_bytes
             .as_deref()
             .and_then(|version_info_bytes| VSVersionInfo::read_from(version_info_bytes).ok());
+        let pe_info = vs_version_info.as_ref().map(PeInfo::from_version_info);
         let mut string_table = vs_version_info.as_ref().map(VSVersionInfo::string_table);
         let legal_copyright = string_table
             .as_mut()
@@ -59,13 +64,13 @@ impl Exe {
             .as_mut()
             .and_then(|table| table.swap_remove("CompanyName"))
             .map(str::to_owned);
-        let file_version = string_table
-            .as_mut()
-            .and_then(|table| table.swap_remove("FileVersion"))
+        let file_version = pe_info
+            .as_ref()
+            .and_then(PeInfo::file_version)
             .map(str::to_owned);
-        let product_version = string_table
-            .as_mut()
-            .and_then(|table| table.swap_remove("ProductVersion"))
+        let product_version = pe_info
+            .as_ref()
+            .and_then(PeInfo::product_version)
             .map(str::to_owned);
 
         match AdvancedInstaller::new(&mut reader) {
@@ -77,6 +82,7 @@ impl Exe {
                     company_name,
                     file_version,
                     product_version,
+                    pe_info,
                 });
             }
             Err(AdvancedInstallerError::NotAdvancedInstallerFile) => {}
@@ -92,6 +98,7 @@ impl Exe {
                     company_name,
                     file_version,
                     product_version,
+                    pe_info,
                 });
             }
             Err(BurnError::NotBurnFile) => {}
@@ -107,6 +114,7 @@ impl Exe {
                     company_name,
                     file_version,
                     product_version,
+                    pe_info,
                 });
             }
             Err(InnoError::NotInnoFile) => {}
@@ -122,6 +130,7 @@ impl Exe {
                     company_name,
                     file_version,
                     product_version,
+                    pe_info,
                 });
             }
             Err(NsisError::NotNsisFile) => {}
@@ -137,6 +146,7 @@ impl Exe {
                     company_name,
                     file_version,
                     product_version,
+                    pe_info,
                 });
             }
             Err(SquirrelError::NotSquirrelFile) => {}
@@ -167,6 +177,7 @@ impl Exe {
             company_name,
             file_version,
             product_version,
+            pe_info,
         })
     }
 }
