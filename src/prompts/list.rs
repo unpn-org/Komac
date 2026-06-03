@@ -49,9 +49,18 @@ where
     T: FromStr + ListPrompt + Ord,
     <T as FromStr>::Err: Display,
 {
+    list_prompt_with_help::<T, _>(T::HELP_MESSAGE)
+}
+
+pub fn list_prompt_with_help<T, U>(help_message: U) -> color_eyre::Result<BTreeSet<T>>
+where
+    T: FromStr + ListPrompt + Ord,
+    <T as FromStr>::Err: Display,
+    U: AsRef<str>,
+{
     const DELIMITERS: [char; 2] = [' ', ','];
     let items = Text::new(&format!("{}:", T::PLURAL_NAME))
-        .with_help_message(T::HELP_MESSAGE)
+        .with_help_message(help_message.as_ref())
         .with_validator(|input: &str| {
             let items = input
                 .split(|char| DELIMITERS.contains(&char))
