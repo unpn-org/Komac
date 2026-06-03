@@ -2,6 +2,7 @@ pub mod analyze;
 pub mod cleanup;
 pub mod complete;
 pub mod list_versions;
+pub mod new_locale;
 pub mod new_version;
 pub mod remove_dead_versions;
 pub mod remove_version;
@@ -17,6 +18,7 @@ use clap::Subcommand;
 use cleanup::Cleanup;
 use complete::Complete;
 use list_versions::ListVersions;
+use new_locale::NewLocale;
 use new_version::NewVersion;
 use remove_dead_versions::RemoveDeadVersions;
 use remove_version::RemoveVersion;
@@ -29,6 +31,7 @@ use update_version::UpdateVersion;
 #[derive(Subcommand)]
 pub enum Commands {
     New(Box<NewVersion>),       // Comparatively large so boxed to store on the heap
+    NewLocale(Box<NewLocale>),  // Comparatively large so boxed to store on the heap
     Update(Box<UpdateVersion>), // Comparatively large so boxed to store on the heap
     Remove(RemoveVersion),
     Cleanup(Cleanup),
@@ -46,6 +49,7 @@ impl Commands {
     pub async fn run(self) -> color_eyre::Result<()> {
         match self {
             Self::New(new_version) => new_version.run().await,
+            Self::NewLocale(new_locale) => new_locale.run().await,
             Self::Update(update_version) => update_version.run().await,
             Self::Cleanup(cleanup) => cleanup.run().await,
             Self::Remove(remove_version) => remove_version.run().await,
