@@ -788,10 +788,10 @@ impl Entry {
                     }
                 }
 
-                if !source.is_empty() {
-                    state
-                        .variables
-                        .insert(variable.get().unsigned_abs() as usize, result);
+                if result.is_empty() {
+                    state.variables.remove(&index);
+                } else {
+                    state.variables.insert(index, result);
                 }
             }
             Self::StrCmp {
