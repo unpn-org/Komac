@@ -6,7 +6,7 @@ use std::{
 use camino::Utf8Path;
 use color_eyre::eyre::{Result, bail};
 use winget_types::{
-    installer::Installer,
+    installer::{Installer, InstallerType},
     locale::{Copyright, PackageName, Publisher},
     utils::ValidFileExtensions,
 };
@@ -38,18 +38,33 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
     pub(crate) fn new(
         reader: &'reader mut R,
         file_name: &str,
-        font_analysis: FontAnalysis,
+    ) -> Result<Self> {
+        Self::with_installer_type(reader, file_name, None)
+    }
+
+    pub(crate) fn with_installer_type(
+        reader: &'reader mut R,
+        file_name: &str,
+        installer_type: Option<InstallerType>,
     ) -> Result<Self> {
         let path = Utf8Path::new(file_name);
-        if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("appinstaller"))
+        if installer_type != Some(InstallerType::Zip)
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("appinstaller"))
         {
             // AppInstaller files should be converted to an MSIX or MSIXBundle before analysis.
             bail!(".appinstaller files are not supported for the analyze command");
         }
 
-        let extension = ValidFileExtensions::from_path(path)?;
+        // ZIP containers can have arbitrary extensions (for example, NuGet's .nupkg).
+        // Try the ZIP parser for unknown extensions; it validates the archive contents.
+        // An explicit ZIP installer type overrides the filename, including APPX/MSIX.
+        let extension = if installer_type == Some(InstallerType::Zip) {
+            ValidFileExtensions::Zip
+        } else {
+            ValidFileExtensions::from_path(path).unwrap_or(ValidFileExtensions::Zip)
+        };
 
         let installers = match extension {
             ValidFileExtensions::Msi => Msi::new(reader)?.installers(),

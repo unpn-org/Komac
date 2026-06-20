@@ -131,7 +131,7 @@ impl UpdateVersion {
 
         let manifests = package.manifests_mut().unwrap();
 
-        let download_results = files.analyze().await?;
+        let download_results = files.analyze(Some(&manifests.installer)).await?;
         let mut installer_results = Vec::new();
         let mut possible_installer_files = HashMap::new();
         for (url, mut analyzer) in download_results {
