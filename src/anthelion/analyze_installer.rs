@@ -5,7 +5,11 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use indexmap::IndexMap;
 use napi::Either;
-use winget_types::{Sha256String, installer::Architecture, url::DecodedUrl};
+use winget_types::{
+    Sha256String,
+    installer::{Architecture, InstallerManifest, InstallerType},
+    url::DecodedUrl,
+};
 
 use super::{
     error::InvalidArgument,
@@ -18,6 +22,7 @@ use crate::{
     analysis::{Analyzer, installers::zip::MatchedInstaller},
     download::{DownloadedFile, Downloader},
     manifests::Url,
+    traits::InstallerManifestExt,
 };
 
 #[derive(Clone)]
@@ -87,14 +92,27 @@ pub(super) async fn analyze_sources(
     downloader: Arc<Downloader>,
     concurrency: NonZeroUsize,
     sources: Vec<ParsedInstallerSource>,
+    manifest: Option<&InstallerManifest>,
 ) -> Result<Vec<ArtifactAnalysis>> {
     let mut unique_urls = IndexMap::new();
     let parsed_sources = sources
         .into_iter()
         .map(|source| {
+            let previous_installer = manifest.and_then(|manifest| {
+                manifest.installer_for_url(
+                    source.url.inner(),
+                    source.architecture.or(source.url.override_architecture()),
+                )
+            });
             let key = AnalysisKey {
                 url: source.url.to_string(),
                 nested_installer_matches: source.nested_installer_matches,
+                nested_installer_files: previous_installer
+                    .iter()
+                    .flat_map(|installer| &installer.nested_installer_files)
+                    .map(|file| file.relative_file_path.to_string())
+                    .collect(),
+                installer_type: previous_installer.and_then(|installer| installer.r#type),
             };
             unique_urls
                 .entry(key.clone())
@@ -118,7 +136,12 @@ pub(super) async fn analyze_sources(
                     .pop()
                     .ok_or_else(|| eyre!("Downloader returned no file for {}", source_key.url))?;
                 let (source_key, analysis) = tokio::task::spawn_blocking(move || {
-                    let analysis = analyze_download(file, &source_key.nested_installer_matches)?;
+                    let analysis = analyze_download(
+                        file,
+                        &source_key.nested_installer_matches,
+                        &source_key.nested_installer_files,
+                        source_key.installer_type,
+                    )?;
                     Ok::<_, color_eyre::Report>((source_key, analysis))
                 })
                 .await
@@ -161,27 +184,35 @@ pub(super) async fn analyze_sources(
 struct AnalysisKey {
     url: String,
     nested_installer_matches: Vec<String>,
+    nested_installer_files: Vec<String>,
+    installer_type: Option<InstallerType>,
 }
 
 fn analyze_download(
     mut file: DownloadedFile,
     nested_installer_matches: &[String],
+    nested_installer_files: &[String],
+    installer_type: Option<InstallerType>,
 ) -> Result<ArtifactAnalysis> {
-    let mut analyzer = Analyzer::new(&mut file.file, &file.file_name)
-        .wrap_err_with(|| format!("Failed to analyze {}", file.file_name))?;
+    let file_name = file.download.file_name.clone();
+    let mut analyzer =
+        Analyzer::with_installer_type(&mut file.file, &file_name, installer_type, &[])
+            .wrap_err_with(|| format!("Failed to analyze {file_name}"))?;
 
-    let mut installers = if let Some(zip) = &mut analyzer.zip
-        && !nested_installer_matches.is_empty()
+    let matched = if let Some(zip) = &mut analyzer.zip {
+        if nested_installer_matches.is_empty() {
+            zip.analyze_files_with_metadata(nested_installer_files)
+        } else {
+            zip.analyze_matches_with_metadata(nested_installer_matches)
+        }
+        .wrap_err_with(|| format!("Failed to analyze matching installers in {file_name}"))?
+    } else {
+        Vec::new()
+    };
+
+    let mut installers = if !matched.is_empty()
+        || (analyzer.zip.is_some() && !nested_installer_matches.is_empty())
     {
-        let matched = zip
-            .analyze_matches_with_metadata(nested_installer_matches)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to analyze matching installers in {}",
-                    file.file_name
-                )
-            })?;
-
         analyzer.file_version = first_non_empty(
             matched
                 .iter()
@@ -324,10 +355,45 @@ mod tests {
         let first = AnalysisKey {
             url: url.clone(),
             nested_installer_matches: vec!["first.exe".to_owned()],
+            nested_installer_files: Vec::new(),
+            installer_type: None,
         };
         let second = AnalysisKey {
             url,
             nested_installer_matches: vec!["second.exe".to_owned()],
+            nested_installer_files: Vec::new(),
+            installer_type: None,
+        };
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn manifest_installer_type_is_part_of_the_analysis_cache_key() {
+        let msix = AnalysisKey {
+            url: "https://example.com/app.msix".to_owned(),
+            nested_installer_matches: Vec::new(),
+            nested_installer_files: Vec::new(),
+            installer_type: Some(winget_types::installer::InstallerType::Msix),
+        };
+        let zip = AnalysisKey {
+            installer_type: Some(winget_types::installer::InstallerType::Zip),
+            ..msix.clone()
+        };
+        assert_ne!(msix, zip);
+    }
+
+    #[test]
+    fn manifest_nested_files_are_part_of_the_analysis_cache_key() {
+        let first = AnalysisKey {
+            url: "https://example.com/archive.zip".to_owned(),
+            nested_installer_matches: Vec::new(),
+            nested_installer_files: vec!["x64/setup.msi".to_owned()],
+            installer_type: Some(winget_types::installer::InstallerType::Zip),
+        };
+        let second = AnalysisKey {
+            nested_installer_files: vec!["arm64/setup.msi".to_owned()],
+            ..first.clone()
         };
 
         assert_ne!(first, second);

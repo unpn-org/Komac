@@ -7,17 +7,20 @@ use std::{
 use color_eyre::Result;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use tracing::debug;
-use winget_types::{installer::Architecture, url::DecodedUrl};
+use winget_types::{
+    installer::{Architecture, InstallerManifest},
+    url::DecodedUrl,
+};
 
 use super::DownloadedFile;
-use crate::analysis::Analyzer;
+use crate::{analysis::Analyzer, traits::InstallerManifestExt};
 
 #[derive(Default)]
 pub struct Downloads(Vec<DownloadedFile>);
 
 impl Downloads {
     /// Creates a new [`Downloads`] from an iterator of [`DownloadedFile`].
-    #[expect(unused)]
+    #[cfg_attr(not(test), expect(unused))]
     pub fn new<I>(downloads: I) -> Self
     where
         I: IntoIterator<Item = DownloadedFile>,
@@ -31,7 +34,10 @@ impl Downloads {
         self.0.pop()
     }
 
-    pub async fn analyze(&mut self) -> Result<HashMap<DecodedUrl, Analyzer<'_, impl Read + Seek>>> {
+    pub async fn analyze(
+        &mut self,
+        manifest: Option<&InstallerManifest>,
+    ) -> Result<HashMap<DecodedUrl, Analyzer<'_, impl Read + Seek + use<>>>> {
         stream::iter(self.0.iter_mut().map(
             |DownloadedFile {
                  file,
@@ -40,11 +46,24 @@ impl Downloads {
                  last_modified,
                  ..
              }| async move {
-                let mut file_analyzer = Analyzer::new(file, &download.file_name)?;
                 let architecture = download
                     .url()
                     .override_architecture()
                     .or_else(|| Architecture::from_url(download.url().as_str()));
+                let previous_installer = manifest.and_then(|manifest| {
+                    manifest.installer_for_url(download.url().inner(), architecture)
+                });
+                let nested_installer_files = previous_installer
+                    .iter()
+                    .flat_map(|installer| &installer.nested_installer_files)
+                    .map(|file| file.relative_file_path.to_string())
+                    .collect::<Vec<_>>();
+                let mut file_analyzer = Analyzer::with_installer_type(
+                    file,
+                    &download.file_name,
+                    previous_installer.and_then(|installer| installer.r#type),
+                    &nested_installer_files,
+                )?;
                 for installer in &mut file_analyzer.installers {
                     if let Some(architecture) = architecture {
                         installer.architecture = architecture;
@@ -67,5 +86,222 @@ impl Downloads {
 impl Extend<DownloadedFile> for Downloads {
     fn extend<T: IntoIterator<Item = DownloadedFile>>(&mut self, iter: T) {
         self.0.extend(iter);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeSet,
+        io::{Seek, Write},
+    };
+
+    use msi::{Column, Insert, Package, PackageType, Value};
+    use winget_types::installer::{
+        Architecture, Installer, InstallerType, NestedInstallerFiles, NestedInstallerType,
+    };
+    use zip::{ZipWriter, write::SimpleFileOptions};
+
+    use super::*;
+    use crate::download::Download;
+
+    #[rstest::rstest]
+    #[case::manifest_root(false, None)]
+    #[case::installer_entry(true, None)]
+    #[case::architecture_override(false, Some(Architecture::Arm64))]
+    #[tokio::test]
+    async fn ambiguous_archive_analyzes_manifest_nested_installer(
+        #[case] entry_overrides: bool,
+        #[case] architecture_override: Option<Architecture>,
+    ) -> Result<()> {
+        let product_code = "{738E0982-AF6C-478E-B3DD-D03BD2A49C70}";
+        let mut msi = Package::create(PackageType::Installer, std::io::Cursor::new(Vec::new()))?;
+        msi.summary_info_mut().set_arch("x64");
+        msi.create_table(
+            "Property",
+            vec![
+                Column::build("Property").primary_key().string(72),
+                Column::build("Value").string(0),
+            ],
+        )?;
+        msi.insert_rows(
+            Insert::into("Property")
+                .row(vec![Value::from("ProductCode"), Value::from(product_code)]),
+        )?;
+        msi.create_table(
+            "Directory",
+            vec![
+                Column::build("Directory").primary_key().string(72),
+                Column::build("Directory_Parent").nullable().string(72),
+                Column::build("DefaultDir").string(255),
+            ],
+        )?;
+        let msi_bytes = msi.into_inner()?.into_inner();
+        let mut file = tempfile::tempfile()?;
+        {
+            let mut writer = ZipWriter::new(&mut file);
+            for path in [
+                "native/bin/arm64/GameInputRawInputProxy.exe",
+                "native/bin/x64/GameInputRawInputProxy.exe",
+                "native/bin/x86/GameInputRawInputProxy.exe",
+                "redist/GameInputRedist.msi",
+            ] {
+                writer.start_file(path, SimpleFileOptions::default())?;
+                writer.write_all(if path.ends_with(".msi") {
+                    &msi_bytes
+                } else {
+                    b"helper executable must not be analyzed"
+                })?;
+            }
+            writer.finish()?;
+        }
+        file.rewind()?;
+        let url = "https://globalcdn.nuget.org/packages/microsoft.gameinput.4.0.300.nupkg";
+        let mut files = Downloads::new([DownloadedFile {
+            file,
+            download: Download {
+                url: architecture_override
+                    .map_or_else(
+                        || url.to_owned(),
+                        |architecture| format!("{url}|{architecture}"),
+                    )
+                    .parse()?,
+                file_name: "microsoft.gameinput.4.0.300.nupkg".to_owned(),
+                response: None,
+            },
+            sha_256: Default::default(),
+            last_modified: None,
+        }]);
+        let mut manifest = InstallerManifest {
+            r#type: Some(InstallerType::Zip),
+            nested_installer_type: Some(NestedInstallerType::Wix),
+            nested_installer_files: BTreeSet::from([NestedInstallerFiles {
+                relative_file_path: "redist\\GameInputRedist.msi".into(),
+                portable_command_alias: None,
+            }]),
+            installers: vec![Installer {
+                architecture: Architecture::X64,
+                product_code: Some("{DE514461-35F8-4F95-AAE9-630369B9E844}".to_owned()),
+                url: "https://globalcdn.nuget.org/packages/microsoft.gameinput.3.3.214.nupkg"
+                    .parse()?,
+                ..Installer::default()
+            }],
+            ..InstallerManifest::default()
+        };
+        if entry_overrides {
+            manifest.installers[0].nested_installer_files = std::mem::replace(
+                &mut manifest.nested_installer_files,
+                BTreeSet::from([NestedInstallerFiles {
+                    relative_file_path: "native/bin/x86/GameInputRawInputProxy.exe".into(),
+                    portable_command_alias: None,
+                }]),
+            );
+        }
+        let results = files.analyze(Some(&manifest)).await?;
+        let (url, analyzer) = results.into_iter().next().unwrap();
+        let expected_architecture = architecture_override.unwrap_or(Architecture::X64);
+        assert_eq!(analyzer.installers[0].architecture, expected_architecture);
+        assert_eq!(
+            analyzer.installers[0].nested_installer_type,
+            Some(NestedInstallerType::Msi)
+        );
+        let candidates = HashMap::from([(
+            url.clone(),
+            analyzer
+                .zip
+                .as_ref()
+                .unwrap()
+                .possible_installer_files
+                .clone(),
+        )]);
+
+        manifest.update_installers(&analyzer.installers, &candidates);
+        manifest.optimize();
+
+        assert_eq!(manifest.installers.len(), 1);
+        assert_eq!(manifest.installers[0].architecture, expected_architecture);
+        assert_eq!(manifest.installers[0].url, url);
+        assert_eq!(
+            manifest.nested_installer_type,
+            Some(NestedInstallerType::Msi)
+        );
+        assert_eq!(manifest.product_code.as_deref(), Some(product_code));
+        assert_eq!(
+            manifest
+                .nested_installer_files
+                .first()
+                .unwrap()
+                .relative_file_path,
+            "redist\\GameInputRedist.msi"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manifest_zip_type_extracts_msix_during_download_analysis() -> Result<()> {
+        for (root_type, entry_type, expected) in [
+            (Some(InstallerType::Zip), None, InstallerType::Zip),
+            (None, Some(InstallerType::Zip), InstallerType::Zip),
+            (
+                Some(InstallerType::Zip),
+                Some(InstallerType::Msix),
+                InstallerType::Msix,
+            ),
+        ] {
+            let mut file = tempfile::tempfile()?;
+            {
+                let mut writer = ZipWriter::new(&mut file);
+                for (path, contents) in [
+                    ("AppxManifest.xml", br#"<Package>
+                        <Identity Name="Test.App" Version="1.0.0.0" Publisher="CN=Test" ProcessorArchitecture="x64" />
+                        <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" /></Dependencies>
+                    </Package>"#.as_slice()),
+                    ("AppxSignature.p7x", b"test signature".as_slice()),
+                    ("Assets/font.ttf", &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                ] {
+                    writer.start_file(path, SimpleFileOptions::default())?;
+                    writer.write_all(contents)?;
+                }
+                writer.finish()?;
+            }
+            file.rewind()?;
+            let mut files = Downloads::new([DownloadedFile {
+                file,
+                download: Download {
+                    url: "https://example.com/app-2.msix".parse()?,
+                    file_name: "app-2.msix".to_owned(),
+                    response: None,
+                },
+                sha_256: Default::default(),
+                last_modified: None,
+            }]);
+            let mut manifest = InstallerManifest {
+                r#type: root_type,
+                installers: vec![Installer {
+                    r#type: entry_type,
+                    url: "https://example.com/app-1.msix".parse()?,
+                    ..Installer::default()
+                }],
+                ..InstallerManifest::default()
+            };
+            let results = files.analyze(Some(&manifest)).await?;
+            let analyzer = results.values().next().unwrap();
+            assert_eq!(analyzer.installers[0].r#type, Some(expected));
+            if expected == InstallerType::Zip {
+                assert_eq!(
+                    analyzer.installers[0].nested_installer_type,
+                    Some(NestedInstallerType::Font)
+                );
+                assert_eq!(
+                    analyzer.zip.as_ref().unwrap().possible_installer_files,
+                    ["Assets/font.ttf"]
+                );
+                manifest.update_installers(&analyzer.installers, &HashMap::new());
+                assert_eq!(manifest.installers[0].r#type, Some(InstallerType::Zip));
+            } else {
+                assert!(analyzer.zip.is_none());
+            }
+        }
+        Ok(())
     }
 }
