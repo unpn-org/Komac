@@ -135,28 +135,20 @@ impl Msix {
                                 .insert(extension);
                         }
                     }
-                    "Capability" => {
-                        if let Some(capability) = event
+                    element @ ("Capability" | "DeviceCapability") => {
+                        if let Some(attribute) = event
                             .attributes()
                             .flatten()
                             .find(|attribute| attribute.key.into_inner() == "Name")
-                            .map(|attribute| attribute.value)
+                            && let Ok(name) = attribute.normalized_value(XmlVersion::Implicit1_0)
                         {
-                            if event
-                                .name()
-                                .prefix()
-                                .is_some_and(|prefix| prefix.into_inner() == "rescap")
-                            {
-                                if let Ok(restricted_capability) =
-                                    capability.parse::<RestrictedCapability>()
-                                {
-                                    manifest
-                                        .capabilities
-                                        .restricted
-                                        .insert(restricted_capability);
-                                }
-                            } else if let Ok(capability) = capability.parse::<Capability>() {
+                            // Some restricted names use uap:Capability in AppxManifest.xml.
+                            if let Ok(capability) = name.parse::<Capability>() {
                                 manifest.capabilities.unrestricted.insert(capability);
+                            } else if element == "Capability"
+                                && let Ok(capability) = name.parse::<RestrictedCapability>()
+                            {
+                                manifest.capabilities.restricted.insert(capability);
                             }
                         }
                     }

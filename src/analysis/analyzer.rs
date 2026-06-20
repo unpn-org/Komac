@@ -6,7 +6,7 @@ use std::{
 use camino::Utf8Path;
 use color_eyre::eyre::{Result, bail};
 use winget_types::{
-    installer::Installer,
+    installer::{Installer, InstallerType},
     locale::{Copyright, PackageName, Publisher},
 };
 
@@ -35,13 +35,25 @@ pub struct Analyzer<'reader, R: Read + Seek> {
 }
 
 impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
-    pub(crate) fn new(
+    pub(crate) fn new(reader: &'reader mut R, file_name: &str) -> Result<Self> {
+        Self::with_installer_type(reader, file_name, None, &[])
+    }
+
+    pub(crate) fn with_installer_type(
         reader: &'reader mut R,
         file_name: &str,
-        font_analysis: FontAnalysis,
+        installer_type: Option<InstallerType>,
+        nested_installer_files: &[String],
     ) -> Result<Self> {
         let path = Utf8Path::new(file_name);
-        let extension = FileExtension::from_path(path)?;
+        // ZIP containers can have arbitrary extensions (for example, NuGet's .nupkg).
+        // Try the ZIP parser for unknown extensions; it validates the archive contents.
+        // An explicit ZIP installer type overrides the filename, including APPX/MSIX.
+        let extension = if installer_type == Some(InstallerType::Zip) {
+            FileExtension::Zip
+        } else {
+            FileExtension::from_path(path).unwrap_or(FileExtension::Zip)
+        };
 
         let installers = match extension {
             FileExtension::AppInstaller => {
@@ -54,10 +66,27 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
             }
             FileExtension::Zip => {
                 let mut scoped_zip = Zip::new(reader)?;
+                // Updates already declare their payload; helper executables must not prevent
+                // analysis of that payload when an archive has multiple candidates.
+                let matched = scoped_zip.analyze_files_with_metadata(nested_installer_files)?;
+                let file_version = matched
+                    .iter()
+                    .find_map(|analysis| analysis.file_version.clone());
+                let product_version = matched
+                    .iter()
+                    .find_map(|analysis| analysis.product_version.clone());
+                if !matched.is_empty() {
+                    scoped_zip.installers = matched
+                        .into_iter()
+                        .map(|analysis| analysis.installer)
+                        .collect();
+                }
                 let installers = mem::take(&mut scoped_zip.installers);
                 return Ok(Self {
                     installers,
                     zip: Some(scoped_zip),
+                    file_version,
+                    product_version,
                     ..Self::default()
                 });
             }
