@@ -107,7 +107,7 @@ impl Installers for AdvancedInstaller {
             .iter()
             .map(|msi| {
                 let mut installer = msi.installers().into_iter().next().unwrap_or_default();
-                installer.r#type = Some(InstallerType::Exe);
+                installer.r#type = Some(InstallerType::AdvancedInstaller);
 
                 // https://www.advancedinstaller.com/user-guide/exe-setup-file.html#proprietary-command-line-switches-for-the-exe-setup
                 installer.switches = Switches::builder()
