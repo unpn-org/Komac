@@ -1,7 +1,7 @@
 #[cfg(feature = "cli")]
 use std::mem;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     io,
     io::{Read, Seek, SeekFrom},
 };
@@ -11,6 +11,7 @@ use color_eyre::eyre::Result;
 #[cfg(feature = "cli")]
 use inquire::{CustomType, MultiSelect, min_length};
 use regex::Regex;
+use thiserror::Error;
 use tracing::debug;
 #[cfg(feature = "cli")]
 use winget_types::installer::PortableCommandAlias;
@@ -26,6 +27,14 @@ use crate::prompts::handle_inquire_error;
 use crate::traits::path::LowercaseExtension;
 
 const IGNORABLE_FOLDERS: [&str; 2] = ["__MACOSX", "resources"];
+
+#[derive(Debug, Error)]
+#[error("{path} is not a valid nested installer file")]
+struct InvalidNestedInstallerError {
+    path: Utf8PathBuf,
+    #[source]
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
 
 enum NestedFileMatch {
     Contains(String),
@@ -136,76 +145,42 @@ impl<R: Read + Seek> Zip<R> {
 
         debug!(?possible_installer_files);
 
-        let installer_type_counts = ValidFileExtensions::ALL
-            .iter()
-            .map(|file_extension| {
-                (
-                    file_extension,
-                    possible_installer_files
-                        .iter()
-                        .filter(|file_name| {
-                            file_name.extension().is_some_and(|extension| {
-                                extension.eq_ignore_ascii_case(file_extension.as_str())
-                            })
-                        })
-                        .count(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-
-        let mut nested_installer_files = BTreeSet::new();
-        let mut installers = None;
-
         // If there's only one valid file in the zip, extract and analyze it
-        if installer_type_counts
-            .values()
-            .filter(|&&count| count == 1)
-            .count()
-            == 1
-        {
-            let chosen_file_name = &possible_installer_files[0];
-            nested_installer_files = BTreeSet::from([NestedInstallerFiles {
+        let installers = if let [chosen_file_name] = possible_installer_files.as_slice() {
+            let nested_installer_files = BTreeSet::from([NestedInstallerFiles {
                 relative_file_path: chosen_file_name.lowercase_extension(),
                 portable_command_alias: None,
             }]);
-            if let Ok(mut chosen_file) = zip.by_name(chosen_file_name.as_str()) {
-                let mut temp_file = tempfile::tempfile()?;
-                io::copy(&mut chosen_file, &mut temp_file)?;
-                temp_file.seek(SeekFrom::Start(0))?;
-                let file_analyzer = Analyzer::new(&mut temp_file, chosen_file_name.as_str())?;
-                installers = Some(
-                    file_analyzer
-                        .installers
-                        .into_iter()
-                        .map(|installer| Installer {
-                            r#type: Some(InstallerType::Zip),
-                            nested_installer_type: installer
-                                .r#type
-                                .and_then(|installer_type| installer_type.try_into().ok()),
-                            nested_installer_files: nested_installer_files.clone(),
-                            ..installer
-                        })
-                        .collect::<Vec<_>>(),
-                );
-            }
-        }
+            let file_installers = Self::analyze_nested_file_in_archive(&mut zip, chosen_file_name)?;
+
+            file_installers
+                .into_iter()
+                .map(|installer| Installer {
+                    r#type: Some(InstallerType::Zip),
+                    nested_installer_type: installer
+                        .r#type
+                        .and_then(|installer_type| installer_type.try_into().ok()),
+                    nested_installer_files: nested_installer_files.clone(),
+                    ..installer
+                })
+                .collect()
+        } else {
+            vec![Installer {
+                r#type: Some(InstallerType::Zip),
+                ..Installer::default()
+            }]
+        };
 
         Ok(Self {
             archive: zip,
             possible_installer_files,
-            installers: installers.unwrap_or_else(|| {
-                vec![Installer {
-                    r#type: Some(InstallerType::Zip),
-                    nested_installer_files,
-                    ..Installer::default()
-                }]
-            }),
+            installers,
         })
     }
 
     #[cfg(feature = "cli")]
     pub fn prompt(&mut self) -> Result<()> {
-        if !&self.possible_installer_files.is_empty() {
+        if !self.possible_installer_files.is_empty() {
             let chosen = MultiSelect::new(
                 "Select the nested files",
                 mem::take(&mut self.possible_installer_files),
@@ -213,21 +188,22 @@ impl<R: Read + Seek> Zip<R> {
             .with_validator(min_length!(1))
             .prompt()
             .map_err(handle_inquire_error)?;
-            let first_choice = chosen.first().unwrap();
-            let mut temp_file = tempfile::tempfile()?;
-            io::copy(
-                &mut self.archive.by_name(first_choice.as_str())?,
-                &mut temp_file,
+            let mut chosen_paths = chosen.iter();
+            let first_file_installers = Self::analyze_nested_file_in_archive(
+                &mut self.archive,
+                chosen_paths.next().unwrap(),
             )?;
-            temp_file.seek(SeekFrom::Start(0))?;
-            let file_analyzer = Analyzer::new(&mut temp_file, first_choice.file_name().unwrap())?;
+            for path in chosen_paths {
+                Self::analyze_nested_file_in_archive(&mut self.archive, path)?;
+            }
+            let first_file_is_portable = first_file_installers
+                .first()
+                .is_some_and(|installer| installer.r#type == Some(InstallerType::Portable));
             let nested_installer_files = chosen
                 .into_iter()
                 .map(|path| {
                     Ok(NestedInstallerFiles {
-                        portable_command_alias: if file_analyzer.installers[0].r#type
-                            == Some(InstallerType::Portable)
-                        {
+                        portable_command_alias: if first_file_is_portable {
                             CustomType::<PortableCommandAlias>::new(&format!(
                                 "Portable command alias for {path}:",
                             ))
@@ -240,10 +216,10 @@ impl<R: Read + Seek> Zip<R> {
                     })
                 })
                 .collect::<Result<BTreeSet<_>>>()?;
-            self.installers = file_analyzer
-                .installers
+            self.installers = first_file_installers
                 .into_iter()
                 .map(|installer| Installer {
+                    r#type: Some(InstallerType::Zip),
                     nested_installer_type: installer
                         .r#type
                         .and_then(|installer_type| installer_type.try_into().ok()),
@@ -283,7 +259,13 @@ impl<R: Read + Seek> Zip<R> {
                 io::copy(&mut nested_file, &mut temp_file)?;
                 temp_file.seek(SeekFrom::Start(0))?;
 
-                let nested_analyzer = Analyzer::new(&mut temp_file, path.as_str())?;
+                let nested_analyzer =
+                    Analyzer::new(&mut temp_file, path.as_str()).map_err(|source| {
+                        InvalidNestedInstallerError {
+                            path: path.clone(),
+                            source: source.into(),
+                        }
+                    })?;
                 let nested_installer_files = BTreeSet::from([NestedInstallerFiles {
                     relative_file_path: path.lowercase_extension(),
                     portable_command_alias: None,
@@ -318,5 +300,105 @@ impl<R: Read + Seek> Zip<R> {
             .collect::<Vec<_>>();
 
         Ok(installers)
+    }
+
+    fn analyze_nested_file_in_archive(
+        archive: &mut ZipArchive<R>,
+        path: &Utf8Path,
+    ) -> Result<Vec<Installer>> {
+        let mut chosen_file = archive.by_name(path.as_str())?;
+        let mut temp_file = tempfile::tempfile()?;
+        io::copy(&mut chosen_file, &mut temp_file)?;
+        temp_file.seek(SeekFrom::Start(0))?;
+        let analyzer = Analyzer::new(&mut temp_file, path.as_str()).map_err(|source| {
+            InvalidNestedInstallerError {
+                path: path.to_owned(),
+                source: source.into(),
+            }
+        })?;
+        Ok(analyzer.installers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Write};
+
+    use color_eyre::eyre::Result;
+    use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+
+    use super::*;
+
+    const TTF_SIGNATURE: [u8; 4] = [0x00, 0x01, 0x00, 0x00];
+
+    fn zip_with_files(files: &[(&str, &[u8])]) -> Result<Vec<u8>> {
+        let mut buffer = Cursor::new(Vec::new());
+        {
+            let mut writer = ZipWriter::new(&mut buffer);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+            for (path, contents) in files {
+                writer.start_file(path, options)?;
+                writer.write_all(contents)?;
+            }
+
+            writer.finish()?;
+        }
+
+        Ok(buffer.into_inner())
+    }
+
+    #[test]
+    fn selected_nested_files_reject_invalid_file_with_valid_extension() -> Result<()> {
+        let zip_bytes = zip_with_files(&[("valid.ttf", &TTF_SIGNATURE), ("invalid.ttf", b"nope")])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+        let selected_files = [
+            Utf8PathBuf::from("valid.ttf"),
+            Utf8PathBuf::from("invalid.ttf"),
+        ];
+
+        let error = selected_files
+            .iter()
+            .map(|path| Zip::analyze_nested_file_in_archive(&mut zip.archive, path))
+            .collect::<Result<Vec<_>>>()
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "invalid.ttf is not a valid nested installer file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selected_nested_file_accepts_valid_file() -> Result<()> {
+        let zip_bytes = zip_with_files(&[
+            ("valid.ttf", &TTF_SIGNATURE),
+            ("ignored.txt", b"not an installer"),
+        ])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+        let selected_file = Utf8PathBuf::from("valid.ttf");
+
+        let installers = Zip::analyze_nested_file_in_archive(&mut zip.archive, &selected_file)?;
+
+        assert_eq!(installers[0].r#type, Some(InstallerType::Font));
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_nested_candidates_do_not_infer_nested_installer() -> Result<()> {
+        let zip_bytes = zip_with_files(&[
+            ("first.exe", b"not an exe"),
+            ("second.exe", b"not an exe"),
+            ("valid.ttf", &TTF_SIGNATURE),
+        ])?;
+
+        let zip = Zip::new(Cursor::new(zip_bytes))?;
+
+        assert_eq!(zip.installers[0].r#type, Some(InstallerType::Zip));
+        assert_eq!(zip.installers[0].nested_installer_type, None);
+        assert!(zip.installers[0].nested_installer_files.is_empty());
+        Ok(())
     }
 }
