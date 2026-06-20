@@ -3,20 +3,28 @@ use std::{
     mem,
 };
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use itertools::Itertools;
 use winget_types::{
     Path,
     installer::{
-        Installer, InstallerManifest, InstallerType, NestedInstallerFiles, NestedInstallerType,
+        Architecture, Installer, InstallerManifest, InstallerType, NestedInstallerFiles,
+        NestedInstallerType,
     },
     url::DecodedUrl,
+    utils::ValidFileExtensions,
 };
 
 use crate::match_installers::{match_installers, unmatched_installers};
 
 pub trait InstallerManifestExt {
     fn inherit_manifest_properties(&self) -> impl Iterator<Item = Installer> + '_;
+
+    fn installer_for_url(
+        &self,
+        url: &DecodedUrl,
+        architecture: Option<Architecture>,
+    ) -> Option<Installer>;
 
     fn update_installers(
         &mut self,
@@ -26,6 +34,49 @@ pub trait InstallerManifestExt {
 }
 
 impl InstallerManifestExt for InstallerManifest {
+    fn installer_for_url(
+        &self,
+        url: &DecodedUrl,
+        architecture: Option<Architecture>,
+    ) -> Option<Installer> {
+        let architecture = architecture.or_else(|| Architecture::from_url(url.as_str()));
+        let extension = Utf8Path::new(url.path())
+            .extension()
+            .map(str::to_ascii_lowercase);
+        let file_type = ValidFileExtensions::from_url(url);
+        // New versions usually change the URL. Prefer an exact URL, then the same
+        // container extension and architecture, then the closest URL spelling.
+        self.installers
+            .iter()
+            // A newly added format has no previous entry to supply analysis hints.
+            // In particular, a ZIP entry must not force an MSI through the ZIP parser.
+            // Opaque download URLs can still match using architecture and similarity.
+            .filter(
+                |installer| match (file_type, ValidFileExtensions::from_url(&installer.url)) {
+                    (Some(file_type), Some(previous_type)) => file_type == previous_type,
+                    _ => true,
+                },
+            )
+            .max_by(|left, right| {
+                let rank = |installer: &Installer| {
+                    (
+                        installer.url == *url,
+                        Utf8Path::new(installer.url.path())
+                            .extension()
+                            .map(str::to_ascii_lowercase)
+                            == extension,
+                        architecture == Some(installer.architecture),
+                    )
+                };
+                rank(left).cmp(&rank(right)).then_with(|| {
+                    strsim::jaro_winkler(left.url.as_str(), url.as_str())
+                        .total_cmp(&strsim::jaro_winkler(right.url.as_str(), url.as_str()))
+                })
+            })
+            .cloned()
+            .map(|installer| inherit_installer_properties(installer, self))
+    }
+
     fn inherit_manifest_properties(&self) -> impl Iterator<Item = Installer> + '_ {
         self.installers
             .iter()
@@ -192,6 +243,116 @@ mod tests {
 
     use super::{InstallerManifestExt, fix_relative_paths, merge_installer};
     use crate::manifests::to_yaml_string;
+
+    #[rstest]
+    #[case(None, Some(InstallerType::Zip), Some(InstallerType::Zip))]
+    #[case(Some(InstallerType::Zip), None, Some(InstallerType::Zip))]
+    #[case(
+        Some(InstallerType::Zip),
+        Some(InstallerType::Msix),
+        Some(InstallerType::Msix)
+    )]
+    fn analysis_type_honors_manifest_defaults_and_overrides(
+        #[case] root_type: Option<InstallerType>,
+        #[case] installer_type: Option<InstallerType>,
+        #[case] expected: Option<InstallerType>,
+    ) {
+        let manifest = InstallerManifest {
+            r#type: root_type,
+            installers: vec![Installer {
+                r#type: installer_type,
+                url: "https://example.com/app-1.msix".parse().unwrap(),
+                ..Installer::default()
+            }],
+            ..InstallerManifest::default()
+        };
+        assert_eq!(
+            manifest
+                .installer_for_url(&"https://example.com/app-2.msix".parse().unwrap(), None)
+                .and_then(|installer| installer.r#type),
+            expected
+        );
+    }
+
+    #[test]
+    fn analysis_type_matches_each_download_in_mixed_manifests() {
+        let manifest = InstallerManifest {
+            r#type: Some(InstallerType::Zip),
+            installers: vec![
+                Installer {
+                    architecture: Architecture::X64,
+                    url: "https://example.com/portable-1.msix".parse().unwrap(),
+                    ..Installer::default()
+                },
+                Installer {
+                    architecture: Architecture::X64,
+                    r#type: Some(InstallerType::Msix),
+                    url: "https://example.com/setup-1.msix".parse().unwrap(),
+                    ..Installer::default()
+                },
+                Installer {
+                    architecture: Architecture::Arm64,
+                    r#type: Some(InstallerType::Msix),
+                    url: "https://example.com/portable-arm64-1.msix".parse().unwrap(),
+                    ..Installer::default()
+                },
+            ],
+            ..InstallerManifest::default()
+        };
+        for (url, architecture, expected) in [
+            (
+                "https://example.com/portable-2.msix",
+                Architecture::X64,
+                InstallerType::Zip,
+            ),
+            (
+                "https://example.com/setup-2.msix",
+                Architecture::X64,
+                InstallerType::Msix,
+            ),
+            (
+                "https://example.com/portable-2.msix",
+                Architecture::Arm64,
+                InstallerType::Msix,
+            ),
+        ] {
+            assert_eq!(
+                manifest
+                    .installer_for_url(&url.parse().unwrap(), Some(architecture))
+                    .and_then(|installer| installer.r#type),
+                Some(expected)
+            );
+        }
+    }
+
+    #[rstest]
+    #[case::msi("app-x64.msi", None)]
+    #[case::exe("app-x64.exe", None)]
+    #[case::zip("app-x64.ZIP", Some(InstallerType::Zip))]
+    #[case::opaque_url("download", Some(InstallerType::Zip))]
+    fn analysis_hints_require_compatible_download_formats(
+        #[case] file_name: &str,
+        #[case] expected: Option<InstallerType>,
+    ) {
+        let manifest = InstallerManifest {
+            r#type: Some(InstallerType::Zip),
+            installers: vec![Installer {
+                architecture: Architecture::X64,
+                url: "https://example.com/v1/app-x64.zip".parse().unwrap(),
+                ..Installer::default()
+            }],
+            ..InstallerManifest::default()
+        };
+        let url = format!("https://example.com/v2/{file_name}")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            manifest
+                .installer_for_url(&url, None)
+                .and_then(|installer| installer.r#type),
+            expected
+        );
+    }
 
     #[rstest]
     #[case(InstallerType::Msi)]
