@@ -30,20 +30,6 @@ pub enum FileExtension {
 }
 
 impl FileExtension {
-    pub const ALL: [Self; 12] = [
-        Self::Msix,
-        Self::Msi,
-        Self::Appx,
-        Self::Exe,
-        Self::Zip,
-        Self::MsixBundle,
-        Self::AppxBundle,
-        Self::Otf,
-        Self::Ttf,
-        Self::Fnt,
-        Self::Ttc,
-        Self::Otc,
-    ];
     /// Returns `true` if the extension is `.appinstaller`.
     #[must_use]
     #[inline]
