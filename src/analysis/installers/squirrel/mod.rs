@@ -155,7 +155,11 @@ impl Installers for Squirrel {
 
         vec![Installer {
             architecture: self.architecture,
-            r#type: Some(InstallerType::Exe),
+            r#type: Some(if self.is_velopack {
+                InstallerType::Velopack
+            } else {
+                InstallerType::Squirrel
+            }),
             scope: Some(Scope::User),
             product_code: Some(nuspec.id().to_owned()),
             apps_and_features_entries: AppsAndFeaturesEntry::builder()
