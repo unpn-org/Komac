@@ -151,13 +151,12 @@ pub async fn update_package(
         .last()
         .ok_or_else(|| eyre!("No versions found for package"))?;
 
-    let (mut manifests, mut github_values, mut download_results) = try_join!(
-        async {
-            github
-                .get_manifests(&package_identifier, latest_version, font)
-                .await
-                .wrap_err("Failed to get manifests")
-        },
+    let mut manifests = github
+        .get_manifests(&package_identifier, latest_version, font)
+        .await
+        .wrap_err("Failed to get manifests")?;
+
+    let (mut github_values, mut download_results) = try_join!(
         async {
             if let Some(url) = github_url {
                 github
@@ -169,7 +168,12 @@ pub async fn update_package(
                 Ok(None)
             }
         },
-        analyze_sources(downloader, concurrency, installers),
+        analyze_sources(
+            downloader,
+            concurrency,
+            installers,
+            Some(&manifests.installer),
+        ),
     )?;
 
     let installer_results = download_results
