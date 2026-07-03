@@ -138,14 +138,17 @@ impl Downloader {
         download: &PreDownload,
         content_types: GetAll<HeaderValue>,
     ) -> Result<(), ContentTypeError> {
-        if content_types.iter().all(|content_type| {
-            !content_type
-                .as_bytes()
-                .ends_with(Self::OCTET_STREAM.as_bytes())
-                && !content_type
+        // Some download servers omit Content-Type, so only reject explicitly invalid values.
+        if content_types.iter().next().is_some()
+            && content_types.iter().all(|content_type| {
+                !content_type
                     .as_bytes()
-                    .starts_with(Self::APPLICATION.as_bytes())
-        }) {
+                    .ends_with(Self::OCTET_STREAM.as_bytes())
+                    && !content_type
+                        .as_bytes()
+                        .starts_with(Self::APPLICATION.as_bytes())
+            })
+        {
             return Err(ContentTypeError::new(download.clone(), content_types));
         }
 
@@ -308,5 +311,33 @@ impl fmt::Display for ContentTypeError {
             application = Downloader::APPLICATION,
             octet_stream = Downloader::OCTET_STREAM
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+    use crate::manifests::Url;
+
+    #[rstest]
+    #[case::missing(&[], true)]
+    #[case::application(&["application/octet-stream"], true)]
+    #[case::binary_octet_stream(&["binary/octet-stream"], true)]
+    #[case::non_application(&["text/html"], false)]
+    #[case::one_valid(&["text/html", "application/octet-stream"], true)]
+    fn checks_content_types(#[case] content_types: &[&str], #[case] expected: bool) {
+        let download =
+            PreDownload::new("https://example.com/installer.exe".parse::<Url>().unwrap());
+        let mut headers = HeaderMap::new();
+        for content_type in content_types {
+            headers.append(CONTENT_TYPE, content_type.parse().unwrap());
+        }
+
+        assert_eq!(
+            Downloader::check_content_types(&download, headers.get_all(CONTENT_TYPE)).is_ok(),
+            expected
+        );
     }
 }
