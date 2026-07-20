@@ -4,6 +4,7 @@ use std::{
     str::FromStr,
 };
 
+use serde::{Deserialize, Deserializer, de};
 use url::ParseError;
 use winget_types::{installer::Architecture, url::DecodedUrl};
 
@@ -71,6 +72,17 @@ impl FromStr for Url {
     }
 }
 
+impl<'de> Deserialize<'de> for Url {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
 impl From<DecodedUrl> for Url {
     fn from(url: DecodedUrl) -> Self {
         Self {
@@ -86,5 +98,35 @@ impl From<url::Url> for Url {
             inner: DecodedUrl::from_str(url.as_str()).unwrap(),
             override_architecture: None,
         }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_original_url_as_fallback() {
+        const ENCODED: &str = "https://example.com/OpenSans%5Bwdth%2Cwght%5D.ttf";
+        const DECODED: &str = "https://example.com/OpenSans[wdth,wght].ttf";
+
+        let mut url = ENCODED.parse::<Url>().unwrap();
+
+        assert_eq!(url.original_url().as_str(), ENCODED);
+        assert_eq!(url.inner().as_str(), DECODED);
+
+        url.use_original_url();
+
+        assert_eq!(url.inner().as_str(), ENCODED);
+    }
+
+    #[test]
+    fn deserializes_from_string() {
+        const URL: &str = "https://example.com/installer.exe|x64";
+
+        let url = serde_json::from_str::<Url>(&format!("\"{URL}\"")).unwrap();
+
+        assert_eq!(
+            url.original_url().as_str(),
+            "https://example.com/installer.exe"
+        );
+        assert_eq!(url.override_architecture(), Some(Architecture::X64));
     }
 }
