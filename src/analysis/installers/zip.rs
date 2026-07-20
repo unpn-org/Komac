@@ -231,6 +231,38 @@ impl<R: Read + Seek> Zip<R> {
         Ok(())
     }
 
+    /// Select every nested installer candidate without prompting.
+    pub fn select_all(&mut self) -> Result<()> {
+        let chosen = self.possible_installer_files.clone();
+        let Some((first_path, remaining_paths)) = chosen.split_first() else {
+            return Ok(());
+        };
+        let first_file_installers =
+            Self::analyze_nested_file_in_archive(&mut self.archive, first_path)?;
+        for path in remaining_paths {
+            Self::analyze_nested_file_in_archive(&mut self.archive, path)?;
+        }
+        let nested_installer_files = chosen
+            .into_iter()
+            .map(|path| NestedInstallerFiles {
+                portable_command_alias: None,
+                relative_file_path: path.lowercase_extension(),
+            })
+            .collect::<BTreeSet<_>>();
+        self.installers = first_file_installers
+            .into_iter()
+            .map(|installer| Installer {
+                r#type: Some(InstallerType::Zip),
+                nested_installer_type: installer
+                    .r#type
+                    .and_then(|installer_type| installer_type.try_into().ok()),
+                nested_installer_files: nested_installer_files.clone(),
+                ..installer
+            })
+            .collect();
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn analyze_matches(&mut self, matches: &[String]) -> Result<Vec<Installer>> {
         Ok(self
@@ -383,6 +415,44 @@ mod tests {
         let installers = Zip::analyze_nested_file_in_archive(&mut zip.archive, &selected_file)?;
 
         assert_eq!(installers[0].r#type, Some(InstallerType::Font));
+        Ok(())
+    }
+
+    #[test]
+    fn select_all_uses_every_nested_installer_file() -> Result<()> {
+        let zip_bytes = zip_with_files(&[
+            ("first.ttf", &TTF_SIGNATURE),
+            ("nested/second.TTF", &TTF_SIGNATURE),
+            ("ignored.txt", b"not an installer"),
+        ])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+
+        zip.select_all()?;
+
+        let paths = zip.installers[0]
+            .nested_installer_files
+            .iter()
+            .map(|file| file.relative_file_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["first.ttf", "nested/second.ttf"]);
+        assert_eq!(
+            zip.installers[0].nested_installer_type,
+            Some(winget_types::installer::NestedInstallerType::Font)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn select_all_rejects_invalid_nested_installer_file() -> Result<()> {
+        let zip_bytes = zip_with_files(&[("valid.ttf", &TTF_SIGNATURE), ("invalid.ttf", b"nope")])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+
+        let error = zip.select_all().unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "invalid.ttf is not a valid nested installer file"
+        );
         Ok(())
     }
 

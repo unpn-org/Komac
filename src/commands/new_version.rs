@@ -3,11 +3,12 @@ use std::{
     mem,
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
+    str::FromStr,
 };
 
 use anstream::println;
 use clap::Parser;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail, eyre};
 use indicatif::ProgressBar;
 use inquire::CustomType;
 use ordinal::Ordinal;
@@ -43,7 +44,7 @@ use crate::{
         check_prompt, handle_inquire_error,
         list::list_prompt,
         radio_prompt,
-        text::{confirm_prompt, optional_prompt, required_prompt},
+        text::{TextPrompt, confirm_prompt, optional_prompt, required_prompt},
     },
     token::TokenManager,
 };
@@ -109,6 +110,10 @@ pub struct NewVersion {
     #[arg(long, value_hint = clap::ValueHint::Url)]
     release_notes_url: Option<ReleaseNotesUrl>,
 
+    /// Run without prompting
+    #[arg(long)]
+    non_interactive: bool,
+
     /// Number of installers to download at the same time
     #[arg(long, default_value_t = NonZeroUsize::new(num_cpus::get()).unwrap())]
     concurrent_downloads: NonZeroUsize,
@@ -137,7 +142,7 @@ pub struct NewVersion {
     #[arg(long, env = "OPEN_PR")]
     open_pr: bool,
 
-    /// Run without prompting or submitting
+    /// Run without submitting
     #[arg(long, env = "DRY_RUN")]
     dry_run: bool,
 
@@ -156,10 +161,22 @@ pub struct NewVersion {
 
 impl NewVersion {
     pub async fn run(self) -> Result<()> {
+        let non_interactive = self.non_interactive;
+        let dry_run = self.dry_run || (non_interactive && !self.submit);
+
+        if non_interactive && self.token.is_none() {
+            bail!("Non-interactive mode requires --token or GITHUB_TOKEN");
+        }
+
         let token_manager = TokenManager::handle(self.token).await?;
         let github = GitHub::new(token_manager)?;
 
-        let identifier = required_prompt(self.identifier, None::<&str>)?;
+        let identifier = resolve_required(
+            self.identifier,
+            None::<&str>,
+            non_interactive,
+            "--package-identifier",
+        )?;
 
         let package = github
             .get_package(&identifier, self.font.then_some(true))
@@ -169,15 +186,19 @@ impl NewVersion {
             println!("Latest version of {identifier}: {latest_version}");
         }
 
-        let version = required_prompt(self.version, None::<&str>)?;
+        let version = resolve_required(self.version, None::<&str>, non_interactive, "--version")?;
 
         let mut package = package.into_versioned(&version, &github).await?;
         if !self.skip_pr_check && !self.dry_run && !package.prompt_existing_pr()? {
+        if self.skip_pr_check || dry_run || !package.prompt_existing_pr()? {
             return Ok(());
         }
 
         let mut urls = self.urls;
         if urls.is_empty() {
+            if non_interactive {
+                bail!("Missing required option --urls");
+            }
             while urls.len() < 1024 {
                 let message = format!("{} Installer URL", Ordinal(urls.len() + 1));
                 let url_prompt =
@@ -221,10 +242,11 @@ impl NewVersion {
             let mut silent = None;
             let mut silent_with_progress = None;
             let mut custom = None;
-            if analyzer
-                .installers
-                .iter()
-                .any(|installer| installer.r#type == Some(InstallerType::Exe))
+            if !non_interactive
+                && analyzer
+                    .installers
+                    .iter()
+                    .any(|installer| installer.r#type == Some(InstallerType::Exe))
             {
                 if confirm_prompt(&format!("Is {} a portable exe?", analyzer.file_name))? {
                     for installer in &mut analyzer.installers {
@@ -236,20 +258,25 @@ impl NewVersion {
                     None, None,
                 )?);
             }
-            if analyzer
-                .installers
-                .iter()
-                .any(|installer| installer.r#type == Some(InstallerType::Portable))
+            if !non_interactive
+                && analyzer
+                    .installers
+                    .iter()
+                    .any(|installer| installer.r#type == Some(InstallerType::Portable))
             {
                 custom = optional_prompt::<CustomSwitch, &str>(None, None)?;
             }
             if let Some(zip) = &mut analyzer.zip {
-                zip.prompt()?;
-                for (analyzer_installer, zip_installer) in
+                if non_interactive {
+                    zip.select_all()?;
+                } else {
+                    zip.prompt()?;
+                }
+                for (installer, zip_installer) in
                     analyzer.installers.iter_mut().zip(zip.installers.iter())
                 {
-                    analyzer_installer.nested_installer_type = zip_installer.nested_installer_type;
-                    analyzer_installer
+                    installer.nested_installer_type = zip_installer.nested_installer_type;
+                    installer
                         .nested_installer_files
                         .clone_from(&zip_installer.nested_installer_files);
                 }
@@ -260,15 +287,19 @@ impl NewVersion {
                 .maybe_custom(custom)
                 .build();
             let mut analyzer_installers = mem::take(&mut analyzer.installers);
-            for installer in &mut analyzer_installers {
-                if !switches.is_empty() {
+            if !switches.is_empty() {
+                for installer in &mut analyzer_installers {
                     installer.switches = switches.clone();
                 }
             }
             installers.extend(analyzer_installers);
         }
-
-        let default_locale = required_prompt(self.package_locale, Some("en-US"))?;
+        let default_locale = resolve_required(
+            self.package_locale,
+            Some("en-US"),
+            non_interactive,
+            "--package-locale",
+        )?;
         let mut installer_manifest = InstallerManifest {
             package_identifier: identifier.clone(),
             package_version: version.clone(),
@@ -277,6 +308,7 @@ impl NewVersion {
         };
 
         let is_font = check_package_type(&installer_manifest)?;
+
         if !is_font {
             installer_manifest.install_modes = if installer_manifest
                 .installers
@@ -284,17 +316,22 @@ impl NewVersion {
                 .any(|installer| installer.r#type == Some(InstallerType::Inno))
             {
                 InstallModes::all()
+            } else if non_interactive {
+                InstallModes::empty()
             } else {
                 check_prompt::<InstallModes>()?
             };
-            installer_manifest.success_codes = list_prompt::<InstallerSuccessCode>()?;
-            installer_manifest.upgrade_behavior = Some(radio_prompt::<UpgradeBehavior>()?);
-            installer_manifest.commands = list_prompt::<Command>()?;
-            installer_manifest.protocols = list_prompt::<Protocol>()?;
+            if !non_interactive {
+                installer_manifest.success_codes = list_prompt::<InstallerSuccessCode>()?;
+                installer_manifest.upgrade_behavior = Some(radio_prompt::<UpgradeBehavior>()?);
+                installer_manifest.commands = list_prompt::<Command>()?;
+                installer_manifest.protocols = list_prompt::<Protocol>()?;
+            }
             installer_manifest.file_extensions = if installer_manifest
                 .installers
                 .iter()
                 .all(|installer| installer.file_extensions.is_empty())
+                && !non_interactive
             {
                 list_prompt::<FileExtension>()?
             } else {
@@ -311,7 +348,7 @@ impl NewVersion {
             package_identifier: identifier.clone(),
             package_version: version.clone(),
             package_locale: default_locale.clone(),
-            publisher: required_prompt(
+            publisher: resolve_required(
                 self.publisher,
                 download_results
                     .values()
@@ -322,72 +359,87 @@ impl NewVersion {
                             .as_ref()
                             .and_then(|values| values.publisher.as_ref())
                     }),
+                non_interactive,
+                "--publisher",
             )?,
-            publisher_url: optional_prompt(
+            publisher_url: resolve_optional(
                 self.publisher_url,
                 github_values.as_ref().map(|values| &values.publisher_url),
+                non_interactive,
             )?,
-            publisher_support_url: optional_prompt(
+            publisher_support_url: resolve_optional(
                 self.publisher_support_url,
                 github_values
                     .as_ref()
                     .and_then(|values| values.issues_url.as_ref()),
+                non_interactive,
             )?,
-            author: optional_prompt(self.author, None::<&str>)?,
-            package_name: required_prompt(
+            author: resolve_optional(self.author, None::<&str>, non_interactive)?,
+            package_name: resolve_required(
                 self.package_name,
                 download_results
                     .values()
                     .find(|analyzer| analyzer.package_name.is_some())
                     .and_then(|analyzer| analyzer.package_name.as_ref()),
+                non_interactive,
+                "--package-name",
             )?,
-            package_url: optional_prompt(
+            package_url: resolve_optional(
                 self.package_url,
                 github_values.as_ref().map(|values| &values.package_url),
+                non_interactive,
             )?,
-            license: required_prompt(
+            license: resolve_required(
                 self.license,
                 github_values
                     .as_ref()
                     .and_then(|values| values.license.as_ref()),
+                non_interactive,
+                "--license",
             )?,
-            license_url: optional_prompt(
+            license_url: resolve_optional(
                 self.license_url,
                 github_values
                     .as_ref()
                     .and_then(|values| values.license_url.as_ref()),
+                non_interactive,
             )?,
-            copyright: optional_prompt(
+            copyright: resolve_optional(
                 self.copyright,
                 download_results
                     .values()
                     .find(|analyzer| analyzer.copyright.is_some())
                     .and_then(|analyzer| analyzer.copyright.as_ref()),
+                non_interactive,
             )?,
-            copyright_url: optional_prompt(self.copyright_url, None::<&str>)?,
-            short_description: required_prompt(
+            copyright_url: resolve_optional(self.copyright_url, None::<&str>, non_interactive)?,
+            short_description: resolve_required(
                 self.short_description,
                 github_values
                     .as_ref()
                     .and_then(|values| values.description.as_ref()),
+                non_interactive,
+                "--short-description",
             )?,
-            description: optional_prompt(self.description, None::<&str>)?,
-            moniker: optional_prompt(self.moniker, None::<&str>)?,
+            description: resolve_optional(self.description, None::<&str>, non_interactive)?,
+            moniker: resolve_optional(self.moniker, None::<&str>, non_interactive)?,
             tags: match github_values
                 .as_mut()
                 .map(|values| mem::take(&mut values.topics))
             {
                 Some(topics) => topics,
+                None if non_interactive => BTreeSet::new(),
                 None => list_prompt::<Tag>()?,
             },
             release_notes: github_values
                 .as_mut()
                 .and_then(|values| values.release_notes.take()),
-            release_notes_url: optional_prompt(
+            release_notes_url: resolve_optional(
                 self.release_notes_url,
                 github_values
                     .as_ref()
                     .and_then(|values| values.release_notes_url.as_ref()),
+                non_interactive,
             )?,
             ..DefaultLocaleManifest::default()
         };
@@ -414,7 +466,7 @@ impl NewVersion {
         let mut changes =
             manifests.create(&identifier, &version, self.created_with.as_deref(), is_font);
 
-        if self.dry_run {
+        if dry_run {
             print_changes(changes.iter().map(Change::manifest));
             return Ok(());
         }
@@ -462,5 +514,55 @@ impl NewVersion {
         }
 
         Ok(())
+    }
+}
+
+fn resolve_required<T, U>(
+    parameter: Option<T>,
+    default: Option<U>,
+    non_interactive: bool,
+    option_name: &str,
+) -> Result<T>
+where
+    T: FromStr + TextPrompt,
+    <T as FromStr>::Err: std::fmt::Display + std::fmt::Debug + Sync + Send + 'static,
+    U: AsRef<str>,
+{
+    match parameter {
+        Some(value) => Ok(value),
+        None if non_interactive => default
+            .map(|value| {
+                value
+                    .as_ref()
+                    .parse::<T>()
+                    .map_err(|error| eyre!(error.to_string()))
+            })
+            .transpose()?
+            .ok_or_else(|| eyre!("Missing required option {option_name}")),
+        None => Ok(required_prompt(None, default)?),
+    }
+}
+
+fn resolve_optional<T, U>(
+    parameter: Option<T>,
+    default: Option<U>,
+    non_interactive: bool,
+) -> Result<Option<T>>
+where
+    T: FromStr + TextPrompt,
+    <T as FromStr>::Err: std::fmt::Display + std::fmt::Debug + Sync + Send + 'static,
+    U: AsRef<str>,
+{
+    match parameter {
+        Some(value) => Ok(Some(value)),
+        None if non_interactive => default
+            .map(|value| {
+                value
+                    .as_ref()
+                    .parse::<T>()
+                    .map_err(|error| eyre!(error.to_string()))
+            })
+            .transpose(),
+        None => Ok(optional_prompt(None, default)?),
     }
 }
