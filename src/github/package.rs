@@ -69,7 +69,7 @@ impl Package<'_, '_, Versioned> {
 
     pub fn prompt_existing_pr(&self) -> InquireResult<bool> {
         if *CI {
-            return Ok(false);
+            return Ok(true);
         }
 
         let Some(ref pull_request) = self.existing_pr else {
