@@ -168,6 +168,35 @@ Creates a new package from scratch.
 komac new
 ```
 
+For non-interactive creation, pass package metadata as PascalCase JSON. Add a
+`Locales` array to create additional locale manifests in the same operation:
+
+```bash
+komac new Example.Package --version 1.2.3 \
+  --urls https://example.com/installer.exe \
+  --non-interactive '{
+    "PackageLocale": "en-US",
+    "Publisher": "Example",
+    "PackageName": "Example Package",
+    "License": "MIT",
+    "ShortDescription": "An example application",
+    "Locales": [
+      {"PackageLocale": "fr-FR", "ShortDescription": "Une application exemple"},
+      {"PackageLocale": "de-DE", "ShortDescription": "Eine Beispielanwendung"}
+    ]
+  }' --output ./output
+```
+
+Set `GITHUB_TOKEN` or provide `--token`. Without `--submit`, non-interactive mode
+generates manifests without submitting a pull request.
+
+Each additional locale requires `PackageLocale`; its other locale metadata fields
+are optional. Package identifiers, versions, and manifest types are set by Komac.
+`Moniker` belongs only in the top-level default-locale metadata. Existing locales
+are retained with the requested package version; duplicate locales and entries
+matching the default locale are rejected. Additional locales are supported only
+through `--non-interactive`.
+
 <div align="center">
   <img src="assets/vhs/new_package.gif" alt="New package gif" />
 </div>
