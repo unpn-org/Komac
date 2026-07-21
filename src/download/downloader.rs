@@ -172,7 +172,7 @@ impl Downloader {
                 "{} returned {}",
                 err.url().unwrap().as_str(),
                 err.status().unwrap()
-            )
+            );
         }
 
         // Check that we're downloading an application
