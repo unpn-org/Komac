@@ -94,7 +94,7 @@ pub(super) async fn analyze_sources(
         .into_iter()
         .map(|source| {
             let key = AnalysisKey {
-                url: source.url.to_string(),
+                url: source.url.original_url().to_string(),
                 nested_installer_matches: source.nested_installer_matches,
             };
             unique_urls
