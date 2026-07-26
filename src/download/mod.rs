@@ -11,7 +11,7 @@ pub use downloads::Downloads;
 pub use file::DownloadedFile;
 use reqwest::{Client, ClientBuilder, Response, header::HeaderValue, redirect::Policy};
 use uuid::Uuid;
-use winget_types::installer::VALID_FILE_EXTENSIONS;
+use winget_types::utils::ValidFileExtensions;
 
 use crate::{github::GITHUB_HOST, manifests::Url};
 
@@ -85,9 +85,7 @@ impl Download {
             .path_segments()
             .and_then(|mut segments| segments.next_back())
             .filter(|last_segment| {
-                Utf8Path::new(last_segment)
-                    .extension()
-                    .is_some_and(|extension| VALID_FILE_EXTENSIONS.contains(&extension))
+                ValidFileExtensions::from_path(Utf8Path::new(last_segment)).is_ok()
             })
             .or_else(|| {
                 final_url

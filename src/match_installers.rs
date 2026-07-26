@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use camino::Utf8Path;
-use winget_types::installer::{Architecture, Installer, Scope, VALID_FILE_EXTENSIONS};
+use winget_types::{
+    installer::{Architecture, Installer, Scope},
+    utils::ValidFileExtensions,
+};
 
 fn locale_score(previous_installer: &Installer, new_installer: &Installer) -> f64 {
     let Some(previous_locale) = previous_installer.locale.as_ref() else {
@@ -102,14 +104,8 @@ pub fn match_installers(
                     new_installer.url.as_str(),
                 );
 
-                let new_extension = Utf8Path::new(new_installer.url.as_str())
-                    .extension()
-                    .filter(|extension| VALID_FILE_EXTENSIONS.contains(extension))
-                    .unwrap_or_default();
-                let previous_extension = Utf8Path::new(previous_installer.url.as_str())
-                    .extension()
-                    .filter(|extension| VALID_FILE_EXTENSIONS.contains(extension))
-                    .unwrap_or_default();
+                let new_extension = ValidFileExtensions::from_url(&new_installer.url);
+                let previous_extension = ValidFileExtensions::from_url(&previous_installer.url);
                 if new_extension != previous_extension {
                     score = 0.0;
                 }
@@ -134,6 +130,37 @@ pub fn match_installers(
         .collect::<HashMap<_, _>>()
 }
 
+pub fn unmatched_installers(
+    matched_installers: &HashMap<Installer, Installer>,
+    new_installers: &[Installer],
+) -> Vec<Installer> {
+    if new_installers.is_empty() {
+        return Vec::new();
+    }
+    if matched_installers.is_empty() {
+        return new_installers.to_vec();
+    }
+
+    let matched_installers = matched_installers
+        .values()
+        .cloned()
+        .map(|mut installer| {
+            installer.nested_installer_files.clear();
+            installer
+        })
+        .collect::<HashSet<_>>();
+
+    new_installers
+        .iter()
+        .filter(|new_installer| {
+            let mut new_installer = Installer::clone(new_installer);
+            new_installer.nested_installer_files.clear();
+            !matched_installers.contains(&new_installer)
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, str::FromStr};
@@ -144,7 +171,7 @@ mod tests {
         url::DecodedUrl,
     };
 
-    use crate::match_installers::match_installers;
+    use crate::match_installers::{match_installers, unmatched_installers};
 
     #[test]
     fn test_vscodium() {
@@ -198,6 +225,64 @@ mod tests {
             match_installers(previous_installers, &new_installers),
             expected
         );
+    }
+
+    #[test]
+    fn identifies_new_installers_without_a_previous_match() {
+        let previous_x64 = Installer {
+            architecture: Architecture::X64,
+            url: DecodedUrl::from_str("https://example.com/app-1.0-x64.exe").unwrap(),
+            ..Installer::default()
+        };
+        let new_x64 = Installer {
+            architecture: Architecture::X64,
+            url: DecodedUrl::from_str("https://example.com/app-2.0-x64.exe").unwrap(),
+            ..Installer::default()
+        };
+        let new_arm64 = Installer {
+            architecture: Architecture::Arm64,
+            url: DecodedUrl::from_str("https://example.com/app-2.0-arm64.exe").unwrap(),
+            ..Installer::default()
+        };
+        let new_installers = vec![new_x64.clone(), new_arm64.clone()];
+
+        let matched_installers = match_installers(vec![previous_x64], &new_installers);
+
+        assert_eq!(
+            matched_installers.values().collect::<Vec<_>>(),
+            vec![&new_x64]
+        );
+        assert_eq!(
+            unmatched_installers(&matched_installers, &new_installers),
+            vec![new_arm64]
+        );
+    }
+
+    #[test]
+    fn nested_files_do_not_create_an_unmatched_installer() {
+        use std::collections::BTreeSet;
+
+        use winget_types::installer::{NestedInstallerFiles, NestedInstallerType};
+
+        let nested_file = |path: &str| NestedInstallerFiles {
+            relative_file_path: path.into(),
+            portable_command_alias: None,
+        };
+        let regular = Installer {
+            architecture: Architecture::Neutral,
+            r#type: Some(winget_types::installer::InstallerType::Zip),
+            nested_installer_type: Some(NestedInstallerType::Font),
+            nested_installer_files: BTreeSet::from([nested_file("regular.ttf")]),
+            url: DecodedUrl::from_str("https://example.com/fonts.zip").unwrap(),
+            ..Installer::default()
+        };
+        let bold = Installer {
+            nested_installer_files: BTreeSet::from([nested_file("bold.ttf")]),
+            ..regular.clone()
+        };
+        let matched = HashMap::from([(Installer::default(), regular)]);
+
+        assert!(unmatched_installers(&matched, &[bold]).is_empty());
     }
 
     #[rstest]

@@ -17,6 +17,7 @@ include = ["**/*.rs", "assets/github.graphql", "assets/branding/logo.ico"]
 [[bin]]
 name = "komac"
 path = "src/main.rs"
+required-features = ["cli"]
 
 # https://doc.rust-lang.org/stable/cargo/guide/build-performance.html#reduce-amount-of-generated-debug-information
 [profile.dev]
@@ -33,6 +34,7 @@ debug = true
 codegen-units = 1
 lto = true
 strip = true
+opt-level = 3 # Anthelion
 
 [dependencies]
 anstream = "1.0.0"
@@ -63,7 +65,7 @@ inno = "0.5.1"
 inquire = "0.9.4"
 itertools = "0.15.0"
 itoa = "1.0.18"
-keyring-core = "1.0.0"
+keyring-core = { version = "1.0.0", optional = true }
 lzma-rust2 = { version = "0.20.0", features = ["std"] }
 memchr = "2.8.3"
 msi = "0.10.0"
@@ -81,8 +83,9 @@ regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["charset", "http2", "stream", "system-proxy"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["preserve_order"] } # Anthelion
 serde_with = "3.22.0"
+serde-saphyr = "1.0.0-rc.1" # Anthelion
 serde_yaml = { package = "yaml_serde", version = "0.10.7" }
 sevenz-rust2 = "0.22.2"
 sha2 = "0.11.0"
@@ -101,33 +104,56 @@ typed-path = "0.12.3"
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.25.0", features = ["serde", "v4"] }
 walkdir = "2.5.0"
-winget-types = { version = "0.5.0", features = ["serde", "std", "chrono"] }
+winget-types = { version = "0.5.0", features = ["serde", "std", "chrono"] } # Anthelion
 zerocopy = { version = "0.8.56", features = ["derive", "std"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# Anthelion Start
+napi = { version = "3.12.1", features = ["async", "tokio_rt"] }
+napi-derive = "3.6.3"
+pulldown-cmark = "0.13.4"
+# Anthelion End
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))'.dependencies]
-dbus-secret-service-keyring-store = { version = "1.0.1", features = ["vendored"] }
+dbus-secret-service-keyring-store = { version = "1.0.1", features = ["vendored"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-native-keyring-store = { version = "1.1.0", default-features = false }
+windows-native-keyring-store = { version = "1.1.0", default-features = false, optional = true }
+
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl-vendored = { package = "openssl", version = "0.10.80", features = ["vendored"], optional = true }
 
 [features]
-default = ["openssl"]
-openssl = ["dbus-secret-service-keyring-store/crypto-openssl", "reqwest/native-tls-vendored"]
-rustls = ["dbus-secret-service-keyring-store/crypto-rust", "reqwest/rustls"]
+default = ["cli", "openssl"]
+cli = [
+    "dep:apple-native-keyring-store",
+    "dep:dbus-secret-service-keyring-store",
+    "dep:keyring-core",
+    "dep:windows-native-keyring-store",
+]
+node = ["dep:openssl-vendored", "reqwest/native-tls"]
+openssl = ["dbus-secret-service-keyring-store?/crypto-openssl", "reqwest/native-tls-vendored"]
+rustls = ["dbus-secret-service-keyring-store?/crypto-rust", "reqwest/rustls"]
 
 [build-dependencies]
 cynic-codegen = { version = "3.14.0", features = ["rkyv"] }
 windows_exe_info = { version = "0.5.2", features = ["manifest"] }
+# Anthelion Start
+napi-build = "2.4.1"
+
+[lib]
+name = "anthelion_komac"
+crate-type = ["cdylib"]
+
+[patch.crates-io]
+winget-types = { git = "https://github.com/UnownPlain/winget-types.git", branch = "anthelion" }
+# Anthelion End
 
 [dev-dependencies]
 indoc = "2.0.7"
 rstest = "0.26.1"
 
 [package.metadata.generate-rpm]
-assets = [
-    { source = "target/release/komac", dest = "/usr/bin/komac", mode = "755" },
-]
+assets = [{ source = "target/release/komac", dest = "/usr/bin/komac", mode = "755" }]

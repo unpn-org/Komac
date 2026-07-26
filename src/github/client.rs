@@ -1,5 +1,13 @@
-use std::{borrow::Cow, collections::BTreeSet, num::NonZeroU32, str::FromStr};
+use std::{
+    borrow::Cow,
+    collections::BTreeSet,
+    fmt::{Display, Formatter},
+    num::NonZeroU32,
+    str::FromStr,
+    time::Duration,
+};
 
+use bitflags::bitflags;
 use bon::bon;
 use color_eyre::eyre::eyre;
 use cynic::{GraphQlResponse, Id, MutationBuilder, QueryBuilder, http::ReqwestExt};
@@ -20,7 +28,6 @@ use winget_types::{
 
 use super::{GitHubError, graphql::create_pull_request};
 use crate::{
-    commands::{cleanup::MergeState, utils::SPINNER_TICK_RATE},
     github::{
         GITHUB_REF, MICROSOFT, WINGET_PKGS, WINGET_PKGS_FULL_NAME,
         graphql::{
@@ -41,11 +48,45 @@ use crate::{
             pull_request_body,
         },
     },
+    http_headers::default_headers,
     manifests::Manifests,
-    token::default_headers,
     traits::FromHtml,
     update_state::UpdateState,
 };
+
+const SPINNER_TICK_RATE: Duration = Duration::from_millis(50);
+
+bitflags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct MergeState: u8 {
+        const MERGED = 1 << 0;
+        const CLOSED = 1 << 1;
+    }
+}
+
+impl Display for MergeState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match *self {
+                Self::MERGED => "merged",
+                Self::CLOSED => "closed",
+                _ => "merged or closed",
+            }
+        )
+    }
+}
+
+impl From<(bool, bool)> for MergeState {
+    fn from((only_merged, only_closed): (bool, bool)) -> Self {
+        match (only_merged, only_closed) {
+            (true, false) => Self::MERGED,
+            (false, true) => Self::CLOSED,
+            _ => Self::all(),
+        }
+    }
+}
 
 #[derive(Clone)]
 #[repr(transparent)]
@@ -527,6 +568,7 @@ impl GitHub {
         changes: Changes,
         replace_version: Option<&PackageVersion>,
         issue_resolves: &[NonZeroU32],
+        #[builder(default)] automated: bool,
         created_with: Option<&str>,
         created_with_url: Option<&DecodedUrl>,
     ) -> Result<create_pull_request::PullRequest, GitHubError> {
@@ -571,6 +613,7 @@ impl GitHub {
             &commit_title,
             &pull_request_body()
                 .issue_resolves(issue_resolves)
+                .automated(automated)
                 .maybe_created_with(created_with)
                 .maybe_created_with_url(created_with_url)
                 .build(),
