@@ -5,7 +5,7 @@ use owo_colors::OwoColorize;
 use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::token::{TokenManager, default_headers};
+use crate::{http_headers::default_headers, token::TokenManager};
 
 /// Update the stored token
 #[derive(Parser)]

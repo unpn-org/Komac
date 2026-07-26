@@ -25,6 +25,8 @@ pub struct Exe {
     pub legal_copyright: Option<String>,
     pub product_name: Option<String>,
     pub company_name: Option<String>,
+    pub file_version: Option<String>,
+    pub product_version: Option<String>,
 }
 
 pub enum ExeType {
@@ -57,6 +59,14 @@ impl Exe {
             .as_mut()
             .and_then(|table| table.swap_remove("CompanyName"))
             .map(str::to_owned);
+        let file_version = string_table
+            .as_mut()
+            .and_then(|table| table.swap_remove("FileVersion"))
+            .map(str::to_owned);
+        let product_version = string_table
+            .as_mut()
+            .and_then(|table| table.swap_remove("ProductVersion"))
+            .map(str::to_owned);
 
         match AdvancedInstaller::new(&mut reader) {
             Ok(advanced) => {
@@ -65,6 +75,8 @@ impl Exe {
                     legal_copyright,
                     product_name,
                     company_name,
+                    file_version,
+                    product_version,
                 });
             }
             Err(AdvancedInstallerError::NotAdvancedInstallerFile) => {}
@@ -78,6 +90,8 @@ impl Exe {
                     legal_copyright,
                     product_name,
                     company_name,
+                    file_version,
+                    product_version,
                 });
             }
             Err(BurnError::NotBurnFile) => {}
@@ -91,6 +105,8 @@ impl Exe {
                     legal_copyright,
                     product_name,
                     company_name,
+                    file_version,
+                    product_version,
                 });
             }
             Err(InnoError::NotInnoFile) => {}
@@ -104,6 +120,8 @@ impl Exe {
                     legal_copyright,
                     product_name,
                     company_name,
+                    file_version,
+                    product_version,
                 });
             }
             Err(NsisError::NotNsisFile) => {}
@@ -117,6 +135,8 @@ impl Exe {
                     legal_copyright,
                     product_name,
                     company_name,
+                    file_version,
+                    product_version,
                 });
             }
             Err(SquirrelError::NotSquirrelFile) => {}
@@ -145,6 +165,8 @@ impl Exe {
             legal_copyright,
             product_name,
             company_name,
+            file_version,
+            product_version,
         })
     }
 }

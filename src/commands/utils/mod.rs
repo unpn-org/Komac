@@ -1,4 +1,3 @@
-pub mod environment;
 mod rate_limit;
 mod submit_option;
 
