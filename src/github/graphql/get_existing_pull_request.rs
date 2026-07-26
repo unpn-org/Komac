@@ -55,16 +55,21 @@ impl GitHub {
         &self,
         identifier: &PackageIdentifier,
         version: &PackageVersion,
+        authenticated_user_only: bool,
     ) -> Result<Option<PullRequest>, GitHubError> {
+        let author_filter = if authenticated_user_only {
+            " author:@me"
+        } else {
+            ""
+        };
+        let query = format!(
+            "repo:{} is:pull-request in:title {identifier} {version}{author_filter}", upstream()
+        );
+
         self.0
             .post(GRAPHQL_URL)
             .run_graphql(GetExistingPullRequest::build(
-                GetExistingPullRequestVariables {
-                    query: &format!(
-                        "repo:{} is:pull-request in:title {identifier} {version}",
-                        upstream()
-                    ),
-                },
+                GetExistingPullRequestVariables { query: &query },
             ))
             .await
             .map(|response| {
@@ -112,6 +117,10 @@ mod tests {
                     url
                     state
                     createdAt
+                    viewerDidAuthor
+                    author {
+                      login
+                    }
                   }
                 }
               }

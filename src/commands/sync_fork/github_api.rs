@@ -9,10 +9,14 @@ use super::{
     service::ForkSyncApi,
 };
 use crate::github::{
-    CompareStatus, Comparison, GitHubError, MergeType, Repository,
+    GitHubError, Repository,
     client::GitHub,
     graphql::get_sync_repositories::{
         DefaultBranchRef, ForkRepository, GetNamedFork, GetViewerFork, UpstreamRepository,
+    },
+    rest::{
+        compare_commits::{CompareStatus, Comparison},
+        merge_upstream::MergeType,
     },
 };
 
@@ -142,10 +146,10 @@ mod tests {
     use rstest::rstest;
 
     use super::{
-        Divergence, GetNamedFork, GetViewerFork, MergeKind, MergeResult, MergeType,
+        Comparison, Divergence, GetNamedFork, GetViewerFork, MergeKind, MergeResult, MergeType,
         fork_divergence, merge_result, named_fork, viewer_fork,
     };
-    use crate::github::{Comparison, Repository};
+    use crate::github::Repository;
 
     /// The comparison is `fork...upstream`, so GitHub's `ahead`/`behind` describe upstream
     /// relative to the fork and must be flipped to describe the fork.
