@@ -9,4 +9,7 @@ fn main() {
         .unwrap();
     windows_exe_info::icon::icon_ico("assets/branding/logo.ico");
     windows_exe_info::versioninfo::link_cargo_env();
+    // Anthelion Start
+    napi_build::setup();
+    // Anthelion End
 }
