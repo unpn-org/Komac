@@ -8,7 +8,6 @@ use std::{
 };
 
 use cab::Cabinet;
-use camino::Utf8PathBuf;
 use manifest::{
     BurnManifest, Package, VariableType, install_condition::Value, package::msi::Provides,
 };
@@ -248,7 +247,9 @@ impl Installers for Burn {
                 })
                 .filter(|value| !value.contains(['[', ']']))
                 .map(|install_folder| {
-                    InstallationMetadata::new_install_location(Utf8PathBuf::from(&install_folder))
+                    InstallationMetadata::new_install_location(winget_types::PathBuf::from(
+                        install_folder.as_ref(),
+                    ))
                 })
                 .unwrap_or_default(),
             ..Installer::default()

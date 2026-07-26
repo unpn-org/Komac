@@ -25,6 +25,12 @@ impl Downloads {
         Self(downloads.into_iter().collect())
     }
 
+    /// Removes and returns the last downloaded file, if any.
+    #[allow(dead_code)]
+    pub fn pop(&mut self) -> Option<DownloadedFile> {
+        self.0.pop()
+    }
+
     pub async fn analyze(&mut self) -> Result<HashMap<DecodedUrl, Analyzer<'_, impl Read + Seek>>> {
         stream::iter(self.0.iter_mut().map(
             |DownloadedFile {

@@ -92,6 +92,7 @@ impl RemoveVersion {
             "Latest version of {}: {latest_version}",
             &self.package_identifier
         );
+
         let deletion_reason = match self.deletion_reason {
             Some(reason) => reason,
             None => Text::new(&format!(
