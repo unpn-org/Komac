@@ -1,0 +1,31 @@
+[target.'cfg(any(target_env = "msvc", target_env = "musl"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.'cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))']
+rustflags = ["-C", "target-cpu=cortex-a76"]
+
+[target.'cfg(all(windows, target_env = "msvc"))']
+linker = "rust-lld"
+
+# Avoid linking with vcruntime140.dll by statically linking everything,
+# and then explicitly linking with ucrtbase.dll dynamically.
+# We do this, because vcruntime140.dll is an optional Windows component.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = [
+  "-Clink-args=/DEFAULTLIB:ucrt.lib",
+  "-Clink-args=/NODEFAULTLIB:vcruntime.lib",
+  "-Clink-args=/NODEFAULTLIB:msvcrt.lib",
+  "-Clink-args=/NODEFAULTLIB:libucrt.lib",
+]
+
+[build]
+rustflags = ["-Z", "threads=0"]
+
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"
