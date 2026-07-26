@@ -5,7 +5,6 @@ pub mod pull_request;
 use std::{env, fmt::Write, num::NonZeroU32};
 
 use bon::builder;
-use clap::{crate_name, crate_version};
 pub use commit_title::CommitTitle;
 use itertools::Itertools;
 pub use package_path::PackagePath;
@@ -72,55 +71,24 @@ pub fn is_manifest_file<M: Manifest>(
 pub fn pull_request_body(
     #[builder(default)] issue_resolves: &[NonZeroU32],
     alternative_text: Option<&str>,
-    created_with: Option<&str>,
-    created_with_url: Option<&DecodedUrl>,
+    #[builder(default)] automated: bool,
+    _created_with: Option<&str>,
+    _created_with_url: Option<&DecodedUrl>,
 ) -> String {
-    const FRUITS: [&str; 16] = [
-        "apple",
-        "banana",
-        "blueberries",
-        "cherries",
-        "grapes",
-        "green_apple",
-        "kiwi_fruit",
-        "lemon",
-        "mango",
-        "melon",
-        "peach",
-        "pear",
-        "pineapple",
-        "strawberry",
-        "tangerine",
-        "watermelon",
-    ];
+    const EMOJIS: [&str; 10] = ["🌌", "🌠", "⭐", "✨", "🌟", "☄️", "🚀", "🛰️", "🌠", "🔭"];
 
     let mut body = String::new();
     if let Some(alternative_text) = alternative_text {
         let _ = writeln!(body, "### {alternative_text}");
     } else {
         let mut rng = rand::rng();
+        let emoji = EMOJIS[rng.random_range(0..EMOJIS.len())];
 
-        let emoji = if rng.random_ratio(1, 50) {
-            FRUITS[rng.random_range(0..FRUITS.len())]
+        if automated {
+            let _ = write!(body, "Automatically updated by {emoji} Anthelion.");
         } else {
-            "rocket"
-        };
-
-        body.push_str("### Pull request has been created with ");
-
-        if let (Some(tool_name), Some(tool_url)) = (created_with, created_with_url) {
-            let _ = write!(body, "[{tool_name}]({tool_url})");
-        } else {
-            let _ = write!(
-                body,
-                "[{}]({}) v{}",
-                crate_name!(),
-                env!("CARGO_PKG_REPOSITORY"),
-                crate_version!()
-            );
+            let _ = write!(body, "Created by {emoji} Anthelion.");
         }
-
-        let _ = writeln!(body, " :{emoji}:");
     }
 
     if !issue_resolves.is_empty() {
@@ -128,6 +96,34 @@ pub fn pull_request_body(
         for issue in issue_resolves.iter().sorted_unstable() {
             let _ = writeln!(body, "- Resolves #{issue}");
         }
+    }
+
+    if env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true") {
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push('\n');
+        let _ = writeln!(body, "<details>");
+        let _ = writeln!(body, "<summary>Debug</summary>");
+        let _ = writeln!(body);
+
+        if let (Ok(repository), Ok(run_id)) =
+            (env::var("GITHUB_REPOSITORY"), env::var("GITHUB_RUN_ID"))
+        {
+            let server_url =
+                env::var("GITHUB_SERVER_URL").unwrap_or_else(|_| "https://github.com".to_owned());
+            let _ = writeln!(
+                body,
+                "Run URL: {server_url}/{repository}/actions/runs/{run_id}"
+            );
+        }
+        let _ = writeln!(
+            body,
+            "Anthelion komac SHA: {}",
+            option_env!("GITHUB_SHA").unwrap_or("N/A")
+        );
+
+        let _ = writeln!(body, "</details>");
     }
 
     body
@@ -166,7 +162,18 @@ mod tests {
         VersionManifest, icu_locale::langid,
     };
 
-    use super::is_manifest_file;
+    use super::{is_manifest_file, pull_request_body};
+
+    #[test]
+    fn pull_request_body_uses_explicit_attribution() {
+        assert!(pull_request_body().build().starts_with("Created by "));
+        assert!(
+            pull_request_body()
+                .automated(true)
+                .build()
+                .starts_with("Automatically updated by ")
+        );
+    }
 
     #[test]
     fn valid_installer_manifest_file() {

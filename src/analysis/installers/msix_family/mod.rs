@@ -231,12 +231,15 @@ impl Installers for Msix {
                 .build()
                 .into(),
             installation_metadata: InstallationMetadata::new_install_location(
-                get_install_location(
-                    &self.manifest.identity.name,
-                    &self.manifest.identity.publisher,
-                    &self.manifest.identity.version,
-                    &self.manifest.identity.processor_architecture,
-                    &self.manifest.identity.resource_id,
+                winget_types::PathBuf::from(
+                    get_install_location(
+                        &self.manifest.identity.name,
+                        &self.manifest.identity.publisher,
+                        &self.manifest.identity.version,
+                        &self.manifest.identity.processor_architecture,
+                        &self.manifest.identity.resource_id,
+                    )
+                    .as_str(),
                 ),
             ),
             ..Installer::default()

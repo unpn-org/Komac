@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use nupkg_reader::NupkgReader;
 use nuspec::NuSpec;
 use quick_xml::de::from_str;
@@ -166,9 +166,9 @@ impl Installers for Squirrel {
                 .build()
                 .into(),
             switches,
-            installation_metadata: InstallationMetadata::new_install_location(Utf8PathBuf::from(
-                format!(r"%LocalAppData%\{}", nuspec.id()),
-            )),
+            installation_metadata: InstallationMetadata::new_install_location(
+                winget_types::PathBuf::from(format!(r"%LocalAppData%\{}", nuspec.id())),
+            ),
             ..Installer::default()
         }]
     }
