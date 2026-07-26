@@ -1,12 +1,12 @@
 use std::{borrow::Cow, fmt};
 
 use camino::Utf8Path;
+use color_eyre::Result;
 use const_format::formatcp;
 use reqwest::{Client, ClientBuilder, Response, header::HeaderValue, redirect::Policy};
 use uuid::Uuid;
-use winget_types::installer::VALID_FILE_EXTENSIONS;
 
-use crate::{github::GITHUB_HOST, manifests::Url};
+use crate::{analysis::extensions::FileExtension, github::GITHUB_HOST, manifests::Url};
 
 /// A pre-download URL used for validating the URL and converting it into a
 /// different final URL if necessary.
@@ -20,12 +20,6 @@ impl PreDownload {
         Self(url)
     }
 
-    /// Returns the pre-download's [`Url`].
-    #[inline]
-    pub const fn url(&self) -> &Url {
-        &self.0
-    }
-
     /// Returns a mutable reference to the pre-download's [`Url`].
     #[inline]
     pub const fn url_mut(&mut self) -> &mut Url {
@@ -36,6 +30,27 @@ impl PreDownload {
     #[inline]
     pub fn into_url(self) -> Url {
         self.0
+    }
+
+    fn is_successful(response: &reqwest::Result<Response>) -> bool {
+        response
+            .as_ref()
+            .is_ok_and(|response| response.status().is_success())
+    }
+
+    pub(super) async fn send(&mut self, client: &Client) -> reqwest::Result<Response> {
+        let url = (**self.0).clone();
+        let response = client.get(url.clone()).send().await;
+
+        if url == *self.0.original_url() || Self::is_successful(&response) {
+            return response;
+        }
+
+        let response = client.get(self.0.original_url().clone()).send().await;
+        if Self::is_successful(&response) {
+            self.0.use_original_url();
+        }
+        response
     }
 
     /// Gets the filename from a URL given the URL, a final redirected URL, and an optional
@@ -89,11 +104,7 @@ impl PreDownload {
         self.0
             .path_segments()
             .and_then(|mut segments| segments.next_back())
-            .filter(|last_segment| {
-                Utf8Path::new(last_segment)
-                    .extension()
-                    .is_some_and(|extension| VALID_FILE_EXTENSIONS.contains(&extension))
-            })
+            .filter(|last_segment| FileExtension::from_path(Utf8Path::new(last_segment)).is_ok())
             .or_else(|| {
                 final_url
                     .path_segments()
@@ -129,7 +140,7 @@ impl PreDownload {
 
     /// Converts the pre-download's URL to a versioned GitHub URL if it is
     /// currently a GitHub URL pointing to the latest release.
-    pub async fn convert_to_github_versioned(&mut self) -> reqwest::Result<()> {
+    pub async fn convert_to_github_versioned(&mut self) -> Result<()> {
         const LATEST: &str = "latest";
         const DOWNLOAD: &str = "download";
         const MAX_HOPS: u8 = 2;
@@ -148,22 +159,20 @@ impl PreDownload {
 
                 // If there was a redirect error because max hops were reached, as intended, set the
                 // original vanity URL to the redirected versioned URL
-                if let Err(error) = limited_redirect_client.head(self.as_str()).send().await
+                if let Err(error) = limited_redirect_client
+                    .head(self.0.original_url().clone())
+                    .send()
+                    .await
                     && error.is_redirect()
                     && let Some(final_url) = error.url()
                 {
-                    **self.0 = final_url.clone();
+                    *self.0 = final_url.as_str().parse()?;
+                    *self.0.original_url_mut() = final_url.clone();
                 }
             }
         }
 
         Ok(())
-    }
-
-    /// Returns the serialization of the pre-download's URL.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
     }
 }
 
