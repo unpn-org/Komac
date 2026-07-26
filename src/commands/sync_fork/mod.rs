@@ -25,7 +25,8 @@ use summary::{Commits, MergeSummary};
 use tracing::warn;
 
 use crate::{
-    commands::utils::{SPINNER_TICK_RATE, environment::VHS},
+    commands::utils::SPINNER_TICK_RATE,
+    environment::VHS,
     github::{Repository, client::GitHub, upstream},
     terminal::Hyperlinkable,
     token::TokenManager,

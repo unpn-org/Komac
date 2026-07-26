@@ -1,14 +1,14 @@
 pub mod client;
 mod error;
 pub mod graphql;
+#[cfg(feature = "cli")]
 mod package;
 mod repository;
-mod rest;
+pub(crate) mod rest;
 pub mod utils;
 
 pub use error::GitHubError;
 pub use repository::{Repository, set_upstream, upstream};
-pub use rest::{CompareStatus, Comparison, MergeType, Release};
 
 pub const MICROSOFT: &str = "microsoft";
 pub const WINGET_PKGS: &str = "winget-pkgs";

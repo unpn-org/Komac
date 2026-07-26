@@ -1,12 +1,12 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     io::{IsTerminal, stdin},
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
 };
 
 use anstream::println;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use color_eyre::eyre::{Error, Result, bail};
 use futures_util::TryFutureExt;
@@ -23,8 +23,9 @@ use winget_types::{
 };
 
 use crate::{
-    commands::utils::{SPINNER_TICK_RATE, SubmitOption, environment::CI},
+    commands::utils::{SPINNER_TICK_RATE, SubmitOption},
     download::Downloader,
+    environment::CI,
     github::{
         GITHUB_HOST, GitHubError,
         client::{GitHub, GitHubValues},
@@ -34,7 +35,7 @@ use crate::{
     manifests::{Url, print_changes},
     prompts::text::optional_prompt,
     token::TokenManager,
-    traits::path::NormalizePath,
+    traits::{InstallerManifestExt, path::NormalizePath},
 };
 
 /// Add a version to a pre-existing package
@@ -138,29 +139,30 @@ impl UpdateVersion {
         let manifests = package.manifests_mut().unwrap();
 
         let download_results = files.analyze().await?;
-
-        let installers = download_results
-            .into_values()
-            .flat_map(|analyzer| {
-                let possible_installer_files = analyzer
-                    .zip
-                    .as_ref()
-                    .map(|zip| zip.possible_installer_files.clone())
-                    .unwrap_or_default();
-                let mut installers = analyzer.into_installers();
-                for installer in &mut installers {
-                    carry_over_nested_installer(
-                        installer,
-                        &manifests.installer,
-                        &possible_installer_files,
-                    );
-                }
-                installers
-            })
-            .collect();
+        let mut installer_results = Vec::new();
+        let mut possible_installer_files = HashMap::new();
+        for (url, mut analyzer) in download_results {
+            if let Some(zip) = analyzer.zip.take() {
+                possible_installer_files.insert(url.clone(), zip.possible_installer_files);
+            }
+            let mut installers = analyzer.into_installers();
+            for installer in &mut installers {
+                carry_over_nested_installer(
+                    installer,
+                    &manifests.installer,
+                    possible_installer_files
+                        .get(&url)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                );
+            }
+            installer_results.extend(installers);
+        }
 
         manifests.installer.package_version = self.version.clone();
-        manifests.installer.installers = installers;
+        manifests
+            .installer
+            .update_installers(&installer_results, &possible_installer_files);
 
         manifests
             .installer
@@ -403,7 +405,7 @@ fn fix_relative_path(
     nested_file: &NestedInstallerFiles,
     possible_installer_files: &[Utf8PathBuf],
 ) -> NestedInstallerFiles {
-    let relative_file_path = nested_file.relative_file_path.normalize();
+    let relative_file_path = Utf8Path::new(nested_file.relative_file_path.as_str()).normalize();
     if possible_installer_files.contains(&relative_file_path) {
         return nested_file.clone();
     }
@@ -414,7 +416,7 @@ fn fix_relative_path(
         .map_or_else(
             || nested_file.clone(),
             |file_path| NestedInstallerFiles {
-                relative_file_path: file_path.clone(),
+                relative_file_path: file_path.as_str().into(),
                 ..nested_file.clone()
             },
         )
@@ -480,7 +482,7 @@ mod tests {
         paths
             .iter()
             .map(|path| NestedInstallerFiles {
-                relative_file_path: Utf8PathBuf::from(*path),
+                relative_file_path: (*path).into(),
                 portable_command_alias: None,
             })
             .collect()
@@ -595,7 +597,7 @@ mod tests {
             Utf8PathBuf::from("app_1.1.0/cli.exe"),
         ];
         let nested_file = NestedInstallerFiles {
-            relative_file_path: Utf8PathBuf::from("app_1.0.0/cli.exe"),
+            relative_file_path: "app_1.0.0/cli.exe".into(),
             portable_command_alias: None,
         };
 

@@ -7,7 +7,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use clap::crate_name;
 use serde::{Deserialize, Serialize};
 
-use crate::github::Release;
+use crate::github::rest::latest_release::Release;
 
 /// How long a cached release stays valid before GitHub is queried again.
 const CHECK_INTERVAL: TimeDelta = TimeDelta::hours(24);
