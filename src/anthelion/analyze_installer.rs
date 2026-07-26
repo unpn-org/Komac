@@ -99,7 +99,7 @@ pub(super) async fn analyze_sources(
         .into_iter()
         .map(|source| {
             let key = AnalysisKey {
-                url: source.url.to_string(),
+                url: source.url.original_url().to_string(),
                 nested_installer_matches: source.nested_installer_matches,
                 installer_type: manifest.and_then(|manifest| {
                     manifest.installer_type_for_url(

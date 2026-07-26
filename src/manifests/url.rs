@@ -11,6 +11,7 @@ use winget_types::{installer::Architecture, url::DecodedUrl};
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct Url {
     inner: DecodedUrl,
+    original_url: url::Url,
     override_architecture: Option<Architecture>,
 }
 
@@ -33,6 +34,20 @@ impl Url {
     #[inline]
     pub fn into_inner(self) -> DecodedUrl {
         self.inner
+    }
+
+    #[inline]
+    pub const fn original_url(&self) -> &url::Url {
+        &self.original_url
+    }
+
+    #[inline]
+    pub const fn original_url_mut(&mut self) -> &mut url::Url {
+        &mut self.original_url
+    }
+
+    pub fn use_original_url(&mut self) {
+        *self.inner = self.original_url.clone();
     }
 }
 
@@ -67,6 +82,7 @@ impl FromStr for Url {
 
         Ok(Self {
             inner: url.parse()?,
+            original_url: url.parse()?,
             override_architecture: architecture.parse().ok(),
         })
     }
@@ -85,19 +101,15 @@ impl<'de> Deserialize<'de> for Url {
 
 impl From<DecodedUrl> for Url {
     fn from(url: DecodedUrl) -> Self {
+        let original_url = (*url).clone();
         Self {
             inner: url,
+            original_url,
             override_architecture: None,
         }
     }
 }
 
-impl From<url::Url> for Url {
-    fn from(url: url::Url) -> Self {
-        Self {
-            inner: DecodedUrl::from_str(url.as_str()).unwrap(),
-            override_architecture: None,
-        }
 #[cfg(test)]
 mod tests {
     use super::*;
