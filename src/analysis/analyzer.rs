@@ -24,6 +24,10 @@ pub struct Analyzer<'reader, R: Read + Seek> {
     pub copyright: Option<Copyright>,
     pub package_name: Option<PackageName>,
     pub publisher: Option<Publisher>,
+    #[allow(dead_code)]
+    pub file_version: Option<String>,
+    #[allow(dead_code)]
+    pub product_version: Option<String>,
     pub installers: Vec<Installer>,
     pub zip: Option<Zip<&'reader mut R>>,
 }
@@ -64,6 +68,8 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                         .company_name
                         .take()
                         .and_then(|company_name| Publisher::new(company_name).ok()),
+                    file_version: exe.file_version.take(),
+                    product_version: exe.product_version.take(),
                     ..Self::default()
                 });
             }
@@ -88,6 +94,8 @@ impl<R: Read + Seek> Default for Analyzer<'_, R> {
             copyright: None,
             package_name: None,
             publisher: None,
+            file_version: None,
+            product_version: None,
             installers: Vec::default(),
             zip: None,
         }

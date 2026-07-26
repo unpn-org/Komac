@@ -1,11 +1,13 @@
 mod ascii_ext;
+#[cfg(feature = "cli")]
 pub mod name;
 pub mod path;
 
-use std::{mem, sync::LazyLock};
+use std::{cell::Cell, mem, sync::LazyLock};
 
 pub use ascii_ext::AsciiExt;
 use html2text::render::{TaggedLine, TextDecorator};
+#[cfg(feature = "cli")]
 pub use name::Name;
 use regex::Regex;
 use winget_types::{
@@ -70,7 +72,12 @@ impl IntoWingetArchitecture for PE {
     }
 }
 
-struct GitHubHtmlDecorator;
+#[derive(Default)]
+struct GitHubHtmlDecorator {
+    seen_header: Cell<bool>,
+}
+
+const HEADER_MARKER: &str = "__KOMAC_HEADER__ ";
 
 impl TextDecorator for GitHubHtmlDecorator {
     type Annotation = ();
@@ -119,12 +126,13 @@ impl TextDecorator for GitHubHtmlDecorator {
 
     fn decorate_preformat_cont(&self) -> Self::Annotation {}
 
-    fn decorate_image(&mut self, _src: &str, title: &str) -> (String, Self::Annotation) {
-        (title.to_string(), ())
+    fn decorate_image(&mut self, _src: &str, _title: &str) -> (String, Self::Annotation) {
+        (String::new(), ())
     }
 
     fn header_prefix(&self, _level: usize) -> String {
-        String::new()
+        self.seen_header.set(true);
+        String::from(HEADER_MARKER)
     }
 
     fn quote_prefix(&self) -> String {
@@ -140,7 +148,7 @@ impl TextDecorator for GitHubHtmlDecorator {
     }
 
     fn make_subblock_decorator(&self) -> Self {
-        Self
+        Self::default()
     }
 
     fn finalise(&mut self, _links: Vec<String>) -> Vec<TaggedLine<()>> {
@@ -154,15 +162,57 @@ pub trait FromHtml {
         Self: Sized;
 }
 
+fn add_section_spacing(text: &str) -> String {
+    let mut output = String::with_capacity(text.len() + 32);
+    let mut seen_header = false;
+    let mut previous_line_blank = true;
+
+    for line in text.lines() {
+        let is_blank = line.trim().is_empty();
+        if let Some(header) = line.strip_prefix(HEADER_MARKER) {
+            if seen_header && !previous_line_blank {
+                output.push('\n');
+            }
+            output.push_str(header);
+            output.push('\n');
+            seen_header = true;
+            previous_line_blank = false;
+            continue;
+        }
+
+        output.push_str(line);
+        output.push('\n');
+        previous_line_blank = is_blank;
+    }
+
+    output
+}
+
 impl FromHtml for ReleaseNotes {
     fn from_html(html: &Html) -> Option<Self> {
         // Strings that have whitespace before newlines get escaped and treated as literal strings
         // in YAML so this regex identifies any amount of whitespace and duplicate newlines
         static NEWLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+\n").unwrap());
+        // GitHub release notes often end with compare lines such as:
+        // "Full Changelog: v2.14.0...v2.15.0" or "Full Changelog: 2.14.0...2.15.0".
+        // Remove any line containing a tag/version compare range.
+        static COMPARE_RANGE_LINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?im)^[^\n]*\b[0-9A-Za-z][0-9A-Za-z._+-]*\.\.\.[0-9A-Za-z][0-9A-Za-z._+-]*[^\n]*\n?")
+                    .unwrap()
+        });
 
-        html2text::from_read_with_decorator(html.as_bytes(), usize::MAX, GitHubHtmlDecorator)
-            .ok()
-            .and_then(|text| Self::new(NEWLINE_REGEX.replace_all(&text, "\n")).ok())
+        html2text::from_read_with_decorator(
+            html.as_bytes(),
+            usize::MAX,
+            GitHubHtmlDecorator::default(),
+        )
+        .ok()
+        .and_then(|text| {
+            let normalized_text = COMPARE_RANGE_LINE_REGEX.replace_all(&text, "");
+            let normalized_text = NEWLINE_REGEX.replace_all(&normalized_text, "\n");
+            let normalized_text = add_section_spacing(&normalized_text);
+            Self::new(normalized_text.trim()).ok()
+        })
     }
 }
 
