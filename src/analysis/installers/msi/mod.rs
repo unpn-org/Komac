@@ -295,7 +295,8 @@ impl Installers for Msi {
                 AppsAndFeaturesEntries::new()
             },
             installation_metadata: InstallationMetadata::new_install_location(
-                self.find_install_directory(),
+                self.find_install_directory()
+                    .map(|path| winget_types::PathBuf::from(path.as_str())),
             ),
             ..Installer::default()
         };
