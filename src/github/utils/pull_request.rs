@@ -7,6 +7,7 @@ use serde::Serialize;
 use tokio::{fs, fs::File, io::AsyncWriteExt};
 use winget_types::Manifest;
 
+#[derive(Clone)]
 pub struct Changes(Vec<Change>);
 
 impl Changes {
@@ -49,21 +50,19 @@ impl IntoIterator for Changes {
     }
 }
 
+#[derive(Clone)]
 pub struct Change {
     pub(crate) path: String,
     pub(crate) manifest: String,
 }
 
 impl Change {
-    pub fn new<P, M>(path: P, manifest: &M, created_with: Option<&str>) -> Self
+    pub fn new<P, M>(path: P, manifest: &M, _created_with: Option<&str>) -> Self
     where
         P: Into<String>,
         M: Manifest + Serialize,
     {
-        let mut result = String::from("# Created with ");
-        if let Some(created_with_tool) = created_with {
-            let _ = write!(result, "{created_with_tool} using ");
-        }
+        let mut result = String::from("# Created by Anthelion using ");
         let _ = writeln!(result, "{} v{}", crate_name!(), crate_version!());
         let _ = writeln!(result, "# yaml-language-server: $schema={}", M::SCHEMA);
         let _ = writeln!(result);
