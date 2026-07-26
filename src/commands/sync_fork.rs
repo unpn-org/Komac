@@ -10,7 +10,8 @@ use secrecy::SecretString;
 use tokio::{time::sleep, try_join};
 
 use crate::{
-    commands::utils::{SPINNER_TICK_RATE, environment::VHS},
+    commands::utils::SPINNER_TICK_RATE,
+    environment::VHS,
     github::{client::GitHub, upstream},
     terminal::Hyperlinkable,
     token::TokenManager,

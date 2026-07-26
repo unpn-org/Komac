@@ -1,6 +1,7 @@
 pub mod client;
 mod error;
 pub mod graphql;
+#[cfg(feature = "cli")]
 mod package;
 mod repository;
 mod rest;

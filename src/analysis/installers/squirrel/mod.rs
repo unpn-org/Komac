@@ -169,9 +169,9 @@ impl Installers for Squirrel {
                 .build()
                 .into(),
             switches,
-            installation_metadata: InstallationMetadata::new_install_location(Utf8PathBuf::from(
-                format!(r"%LocalAppData%\{}", nuspec.id()),
-            )),
+            installation_metadata: InstallationMetadata::new_install_location(
+                winget_types::PathBuf::from(format!(r"%LocalAppData%\{}", nuspec.id())),
+            ),
             ..Installer::default()
         }]
     }

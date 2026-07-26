@@ -13,4 +13,7 @@ fn main() {
         .expect("failed to register the GitHub GraphQL schema");
     windows_exe_info::icon::icon_ico(ICON);
     windows_exe_info::versioninfo::link_cargo_env();
+    // Anthelion Start
+    napi_build::setup();
+    // Anthelion End
 }
