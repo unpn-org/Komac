@@ -1,0 +1,380 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version-bump:
+        description: Version component to increment
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+env:
+  DEBUG: napi:*
+  APP_NAME: anthelion-komac
+  DEV_DRIVE_WORKSPACE: ${{ github.workspace }}
+  PACKAGE_NAME: '@unownplain/anthelion-komac'
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  version:
+    name: Determine Version
+
+    runs-on: ubuntu-slim
+
+    environment: Release
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Determine Next Version
+        id: version
+        env:
+          VERSION_BUMP: ${{ inputs.version-bump }}
+        run: |
+          current_version="$(npm view "${PACKAGE_NAME}" version 2>/dev/null || echo 0.0.0)"
+          IFS=. read -r major minor patch <<< "${current_version}"
+
+          case "${VERSION_BUMP}" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="${major}.$((minor + 1)).0" ;;
+            patch) version="${major}.${minor}.$((patch + 1))" ;;
+            *) echo "Unknown version bump: ${VERSION_BUMP}" >&2; exit 1 ;;
+          esac
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${PACKAGE_NAME} ${current_version} -> ${version}"
+
+  build-cli:
+    name: Build CLI - ${{ matrix.platform.target }}
+
+    needs: version
+
+    strategy:
+      fail-fast: false
+
+      # Cross compiling from arm64 runners is faster than compiling on x64 runners
+      matrix:
+        platform:
+          - os: windows-11-arm
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - os: ubuntu-24.04-arm
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-26
+            target: aarch64-apple-darwin
+          - os: macos-26
+            target: x86_64-apple-darwin
+
+    runs-on: ${{ matrix.platform.os }}
+
+    env:
+      RUST_TARGET: ${{ matrix.platform.target }}
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Dev Drive
+        if: ${{ contains(matrix.platform.os, 'windows') }}
+        uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+        with:
+          workspace-copy: true
+          drive-size: 12GB
+          drive-format: ReFS
+          env-mapping: |
+            CARGO_HOME,{{ DEV_DRIVE }}/.cargo
+            RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
+
+      - parallel:
+          - name: Setup Rust
+            uses: moonrepo/setup-rust@abb2d32350334249b178c401e5ec5836e0cd88d3 # v1.3.0
+            with:
+              channel: nightly
+              targets: ${{ matrix.platform.target }}
+              cache: false
+
+          - name: Setup Zig
+            uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+            if: ${{ contains(matrix.platform.target, 'linux') }}
+            with:
+              use-cache: false
+
+          - name: Install Tools
+            uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+            if: ${{ contains(matrix.platform.target, 'linux') }}
+            with:
+              tool: cargo-zigbuild
+
+      - name: Build Binary
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          [[ "${RUNNER_OS}" == "Linux" ]] && subcommand="zigbuild" || subcommand="build"
+
+          cargo "${subcommand}" --target "${RUST_TARGET}" --bin komac --release --locked
+
+      - name: Package Binary
+        id: package
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          bin="komac"
+          artifact_name="komac-${VERSION}-${RUST_TARGET}"
+
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            bin="komac.exe"
+            artifact_name+=".exe"
+            mv "target/${RUST_TARGET}/release/${bin}" "${artifact_name}"
+            echo "file=${artifact_name}" >> "$GITHUB_OUTPUT"
+          else
+            archive_name="${artifact_name}.tar.zst"
+            tar -cvf "${archive_name}" \
+              --use-compress-program="zstd" \
+              -C "target/${RUST_TARGET}/release" \
+              "${bin}"
+            echo "file=${archive_name}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "artifact_name=cli-${RUST_TARGET}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ env.DEV_DRIVE_WORKSPACE }}/${{ steps.package.outputs.file }}
+          if-no-files-found: error
+
+  build-js-bindings:
+    name: Build JS Bindings - ${{ matrix.platform.target }}
+
+    needs: version
+
+    strategy:
+      fail-fast: false
+
+      # Cross compiling from arm64 runners is faster than compiling on x64 runners
+      matrix:
+        platform:
+          - os: windows-11-arm
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - os: ubuntu-24.04-arm
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-26
+            target: aarch64-apple-darwin
+          - os: macos-26
+            target: x86_64-apple-darwin
+
+    runs-on: ${{ matrix.platform.os }}
+
+    env:
+      RUST_TARGET: ${{ matrix.platform.target }}
+      AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR: /tmp/openssl-include
+      AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR: /usr/lib/aarch64-linux-gnu
+      X86_64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR: /tmp/openssl-include
+      X86_64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR: /usr/lib/x86_64-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Dev Drive
+        if: ${{ contains(matrix.platform.os, 'windows') }}
+        uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+        with:
+          workspace-copy: true
+          drive-size: 12GB
+          drive-format: ReFS
+          env-mapping: |
+            CARGO_HOME,{{ DEV_DRIVE }}/.cargo
+            RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
+
+      - parallel:
+          - name: Setup Rust
+            uses: moonrepo/setup-rust@abb2d32350334249b178c401e5ec5836e0cd88d3 # v1.3.0
+            with:
+              channel: nightly
+              targets: ${{ matrix.platform.target }}
+              cache: false
+
+          - name: Setup Zig
+            uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+            if: ${{ contains(matrix.platform.target, 'linux') }}
+            with:
+              use-cache: false
+
+          - name: Install Tools
+            uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+            if: ${{ contains(matrix.platform.target, 'linux') }}
+            with:
+              tool: cargo-zigbuild
+
+          - name: Setup Bun
+            uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+          - name: Install OpenSSL
+            if: ${{ contains(matrix.platform.target, 'linux-gnu') }}
+            run: |
+              if [[ "${RUST_TARGET}" == x86_64-* ]]; then
+                source /etc/os-release
+                sudo dpkg --add-architecture amd64
+                grep -q '^Architectures:' /etc/apt/sources.list.d/ubuntu.sources \
+                  || sudo sed -i '/^Types: deb$/a Architectures: arm64' /etc/apt/sources.list.d/ubuntu.sources
+                {
+                  printf 'deb [arch=amd64] http://archive.ubuntu.com/ubuntu %s main\n' \
+                    "${VERSION_CODENAME}" "${VERSION_CODENAME}-updates"
+                  printf 'deb [arch=amd64] http://security.ubuntu.com/ubuntu %s main\n' \
+                    "${VERSION_CODENAME}-security"
+                } | sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list > /dev/null
+                openssl_arch=amd64
+                openssl_multiarch=x86_64-linux-gnu
+              else
+                openssl_arch=arm64
+                openssl_multiarch=aarch64-linux-gnu
+              fi
+
+              sudo apt-get update
+              sudo apt-get install --yes "libssl-dev:${openssl_arch}"
+              mkdir -p /tmp/openssl-include
+              cp --recursive /usr/include/openssl /tmp/openssl-include/
+              cp "/usr/include/${openssl_multiarch}/openssl/"* \
+                /tmp/openssl-include/openssl/
+
+      - name: Install Dependencies
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: bun ci
+
+      - name: Build Binary
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          [[ "${RUNNER_OS}" == "Linux" ]] && zigbuild_flag="-x" || zigbuild_flag=""
+
+          bun run build --target "${RUST_TARGET}" ${zigbuild_flag} -- --locked
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bindings-${{ matrix.platform.target }}
+          path: |
+            ${{ env.DEV_DRIVE_WORKSPACE }}/${{ env.APP_NAME }}.*.node
+            ${{ env.DEV_DRIVE_WORKSPACE }}/${{ env.APP_NAME }}.*.wasm
+            ${{ env.DEV_DRIVE_WORKSPACE }}/index.js
+            ${{ env.DEV_DRIVE_WORKSPACE }}/index.d.ts
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+
+    needs:
+      - version
+      - build-cli
+      - build-js-bindings
+
+    runs-on: ubuntu-slim
+
+    environment:
+      name: Release
+      deployment: false
+
+    permissions:
+      artifact-metadata: write # Record artifact metadata
+      attestations: write # Publishing artifact attestations
+      contents: write # Publishing GitHub release
+      id-token: write # Artifact attestations and npm Trusted Publishing
+
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - parallel:
+          - name: Checkout
+            uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            with:
+              persist-credentials: false
+
+          - name: Download Artifacts
+            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+            with:
+              path: ./artifacts
+
+      - name: Attest Artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            artifacts/cli-*/*
+            artifacts/bindings-*/*.node
+
+      - parallel:
+          - name: Create Release
+            run: |
+              shopt -s extglob
+              gh release create "v${VERSION}" \
+                --target "${GITHUB_SHA}" \
+                --title "v${VERSION}" \
+                --latest \
+                --notes "Custom build of komac for use with [UnownPlain/anthelion](https://github.com/UnownPlain/anthelion)" \
+                artifacts/**/!(*.js|*.ts|*.d.ts)
+            env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              GH_REPO: ${{ github.repository }}
+
+          # Publish npm
+
+          - name: Overwrite README
+            run: |
+              echo 'komac JS bindings for Anthelion' > README.md
+
+          - name: Setup Bun
+            uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+            with:
+              no-cache: true
+
+          - name: Copy JS files
+            run: cp artifacts/bindings-x86_64-unknown-linux-gnu/{index.js,index.d.ts} .
+
+      - name: Install Dependencies
+        run: bun ci
+
+      - name: Set Package Version
+        run: npm version "${VERSION}" --no-git-tag-version --ignore-scripts
+
+      - name: Create npm Directories
+        run: bun napi create-npm-dirs
+
+      - name: Move Artifacts
+        run: bun run artifacts
+
+      - name: List Packages
+        run: ls -R ./npm
+
+      - name: Publish to npm
+        run: |
+          npm publish --provenance --access public
