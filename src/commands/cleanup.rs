@@ -1,7 +1,4 @@
-use std::fmt::{Display, Formatter};
-
 use anstream::println;
-use bitflags::bitflags;
 use clap::Parser;
 use color_eyre::Result;
 use futures_util::TryFutureExt;
@@ -11,7 +8,9 @@ use owo_colors::OwoColorize;
 use secrecy::SecretString;
 
 use crate::{
-    commands::utils::SPINNER_TICK_RATE, github::client::GitHub, prompts::handle_inquire_error,
+    commands::utils::SPINNER_TICK_RATE,
+    github::client::{GitHub, MergeState},
+    prompts::handle_inquire_error,
     token::TokenManager,
 };
 
@@ -118,38 +117,5 @@ impl Cleanup {
         );
 
         Ok(())
-    }
-}
-
-// Using bitflags instead of an enum to allow combining multiple states (MERGED, CLOSED)
-bitflags! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct MergeState: u8 {
-        const MERGED = 1 << 0;
-        const CLOSED = 1 << 1;
-    }
-}
-
-impl Display for MergeState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                Self::MERGED => "merged",
-                Self::CLOSED => "closed",
-                _ => "merged or closed",
-            }
-        )
-    }
-}
-
-impl From<(bool, bool)> for MergeState {
-    fn from((only_merged, only_closed): (bool, bool)) -> Self {
-        match (only_merged, only_closed) {
-            (true, false) => Self::MERGED,
-            (false, true) => Self::CLOSED,
-            _ => Self::all(),
-        }
     }
 }
