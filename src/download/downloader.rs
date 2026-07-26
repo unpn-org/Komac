@@ -161,7 +161,7 @@ impl Downloader {
         pre_download.upgrade_to_https(client).await;
 
         loop {
-            let res = client.get((***pre_download.url()).clone()).send().await?;
+            let res = pre_download.send(client).await?;
 
             if let Err(err) = res.error_for_status_ref() {
                 bail!(
@@ -183,7 +183,8 @@ impl Downloader {
             if file_extension
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("appinstaller"))
             {
-                *pre_download.url_mut() = AppInstaller::fetch_main_url(res).await?.into();
+                *pre_download.url_mut() =
+                    AppInstaller::fetch_main_url(res).await?.as_str().parse()?;
                 continue;
             }
 
