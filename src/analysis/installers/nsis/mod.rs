@@ -17,7 +17,7 @@ use std::{
 };
 
 use bzip2::read::BzDecoder;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 pub use error::NsisError;
 use flate2::{Decompress, read::ZlibDecoder};
 use msi::Language;
@@ -273,7 +273,7 @@ impl Installers for Nsis {
                                 .eq_ignore_ascii_case(RELATIVE_TEMP_FOLDER)
                         })
                     })
-                    .map(|path| Utf8PathBuf::from(path.as_str())),
+                    .map(|path| path.to_path_buf()),
             ),
             ..Installer::default()
         };

@@ -12,9 +12,25 @@ pub struct PullRequest {
     pub url: Url,
     pub state: PullRequestState,
     pub created_at: DateTime<Utc>,
+    #[allow(dead_code)]
+    pub viewer_did_author: bool,
+    #[allow(dead_code)]
+    pub author: Option<Actor>,
+}
+
+#[derive(cynic::QueryFragment)]
+pub struct Actor {
+    #[allow(dead_code)]
+    pub login: String,
 }
 
 impl PullRequest {
+    #[allow(dead_code)]
+    #[inline]
+    pub fn author_login(&self) -> Option<&String> {
+        self.author.as_ref().map(|author| &author.login)
+    }
+
     /// Returns `true` if the pull request has been closed without being merged.
     #[expect(unused)]
     #[inline]

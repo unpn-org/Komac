@@ -8,7 +8,7 @@ pub mod nsis;
 pub mod pe;
 pub mod squirrel;
 pub mod utils;
-mod zip;
+pub(crate) mod zip;
 
 pub use advanced::AdvancedInstaller;
 pub use burn::Burn;

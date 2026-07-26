@@ -8,7 +8,7 @@ use tokio::try_join;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use crate::{
-    commands::utils::environment::CI,
+    environment::CI,
     github::{GitHubError, client::GitHub, graphql::types::PullRequest},
     manifests::Manifests,
     prompts::text::confirm_prompt,
@@ -91,7 +91,7 @@ impl<'identifier> Package<'identifier, '_, Unversioned> {
         github: &'a GitHub,
     ) -> Result<Package<'identifier, 'version, Versioned>, GitHubError> {
         let existing_pr = github
-            .get_existing_pull_request(self.identifier, version)
+            .get_existing_pull_request(self.identifier, version, false)
             .await?;
 
         Ok(Package {
@@ -117,7 +117,7 @@ impl GitHub {
     ) -> Result<Package<'identifier, 'version, Versioned>, GitHubError> {
         let (versions, existing_pr) = try_join!(
             self.get_versions(identifier),
-            self.get_existing_pull_request(identifier, version),
+            self.get_existing_pull_request(identifier, version, false),
         )?;
 
         Ok(Package {

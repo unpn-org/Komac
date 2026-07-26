@@ -53,6 +53,16 @@ impl PullRequest {
         &self.url
     }
 
+    /// Returns the winget-diff view for this pull request.
+    #[must_use]
+    #[allow(dead_code, reason = "used by the Anthelion library target")]
+    pub fn diff_view_url(&self) -> Url {
+        let mut url = self.url.clone();
+        url.set_host(Some("winget-diff.unownplain.dev"))
+            .expect("winget-diff host should be valid");
+        url
+    }
+
     pub fn print_success(&self) {
         let mut stdout = anstream::stdout();
 
