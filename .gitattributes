@@ -1,6 +1,18 @@
-# Auto detect text files and perform normalization
-*          text=auto
+# Auto detect text files and perform LF normalization
+*        text=auto
 
-*.rs       text diff=rust
-*.toml     text diff=toml
-Cargo.lock text
+
+*.ts    text eol=lf merge=union
+*.tsx   text eol=lf merge=union
+*.rs    text eol=lf merge=union
+*.js    text eol=lf merge=union
+*.json  text eol=lf merge=union
+*.debug text eol=lf merge=union
+
+# Generated codes
+index.js                         linguist-detectable=false
+index.d.ts                       linguist-detectable=false
+anthelion-komac.wasi-browser.js linguist-detectable=false
+anthelion-komac.wasi.cjs        linguist-detectable=false
+wasi-worker-browser.mjs          linguist-detectable=false
+wasi-worker.mjs                  linguist-detectable=false
