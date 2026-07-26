@@ -3,7 +3,7 @@ use std::{fmt, num::NonZeroUsize};
 use camino::Utf8Path;
 use color_eyre::{Result, eyre::bail};
 use futures_util::{StreamExt, TryFutureExt, TryStreamExt, stream};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::{Itertools, Position};
 use reqwest::{
     Client,
@@ -27,6 +27,7 @@ use crate::{
 pub struct Downloader {
     client: Client,
     concurrent_downloads: NonZeroUsize,
+    show_progress: bool,
 }
 
 impl Downloader {
@@ -68,12 +69,29 @@ impl Downloader {
     ///
     /// [`ClientBuilder::build`]: reqwest::ClientBuilder::build
     pub fn new_with_concurrent(concurrent_downloads: NonZeroUsize) -> reqwest::Result<Self> {
+        Self::new_with_concurrent_and_progress(concurrent_downloads, true)
+    }
+
+    /// Creates a new Downloader with a specified number of maximum concurrent downloads and
+    /// optional progress rendering.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error from [`ClientBuilder::build`] which fails if a TLS backend cannot be
+    /// initialized, or the resolver cannot load the system configuration.
+    ///
+    /// [`ClientBuilder::build`]: reqwest::ClientBuilder::build
+    pub fn new_with_concurrent_and_progress(
+        concurrent_downloads: NonZeroUsize,
+        show_progress: bool,
+    ) -> reqwest::Result<Self> {
         Ok(Self {
             client: Client::builder()
                 .default_headers(Self::headers())
                 .referer(false)
                 .build()?,
             concurrent_downloads,
+            show_progress,
         })
     }
 
@@ -84,7 +102,11 @@ impl Downloader {
     where
         I: IntoIterator<Item = Url>,
     {
-        let multi_progress = MultiProgress::new();
+        let multi_progress = if self.show_progress {
+            MultiProgress::new()
+        } else {
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
+        };
 
         let downloaded_files = stream::iter(downloads.into_iter().unique())
             .map(|url| {

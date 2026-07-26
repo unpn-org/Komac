@@ -55,7 +55,7 @@ impl<'id> UpdateRefsInput<'id> {
 #[derive(cynic::QueryFragment)]
 #[cynic(graphql_type = "Mutation", variables = "UpdateRefsInput")]
 pub struct UpdateRefs {
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     #[arguments(input: { clientMutationId: $client_mutation_id, refUpdates: $ref_updates, repositoryId: $repository_id })]
     pub update_refs: Option<UpdateRefsPayload>,
 }
@@ -63,7 +63,7 @@ pub struct UpdateRefs {
 #[derive(cynic::QueryFragment)]
 pub struct UpdateRefsPayload {
     /// A unique identifier for the client performing the mutation.
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     pub client_mutation_id: Option<String>,
 }
 
