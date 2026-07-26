@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
 };
@@ -18,7 +18,6 @@ use winget_types::{
 };
 
 use crate::{
-    analysis::Analyzer,
     commands::utils::{SPINNER_TICK_RATE, SubmitOption},
     download::Downloader,
     github::{
@@ -28,6 +27,7 @@ use crate::{
     },
     manifests::{Url, print_changes},
     token::TokenManager,
+    traits::InstallerManifestExt,
 };
 
 /// Add a version to a pre-existing package
@@ -127,12 +127,19 @@ impl UpdateVersion {
         let manifests = package.manifests_mut().unwrap();
 
         let download_results = files.analyze().await?;
+        let mut installer_results = Vec::new();
+        let mut possible_installer_files = HashMap::new();
+        for (url, mut analyzer) in download_results {
+            if let Some(zip) = analyzer.zip.take() {
+                possible_installer_files.insert(url, zip.possible_installer_files);
+            }
+            installer_results.extend(analyzer.into_installers());
+        }
 
         manifests.installer.package_version = self.version.clone();
-        manifests.installer.installers = download_results
-            .into_values()
-            .flat_map(Analyzer::into_installers)
-            .collect();
+        manifests
+            .installer
+            .update_installers(&installer_results, &possible_installer_files);
 
         manifests.installer
             .installers
