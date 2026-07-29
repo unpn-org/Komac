@@ -19,7 +19,10 @@ use super::{
     },
 };
 use crate::{
-    analysis::{Analyzer, installers::zip::MatchedInstaller},
+    analysis::{
+        Analyzer,
+        installers::{font::FontAnalysis, zip::MatchedInstaller},
+    },
     download::{DownloadedFile, Downloader},
     manifests::Url,
     traits::InstallerManifestExt,
@@ -32,6 +35,7 @@ pub struct ArtifactAnalysis {
     pub release_date: Option<chrono::NaiveDate>,
     pub file_version: Option<String>,
     pub product_version: Option<String>,
+    pub font_version: Option<String>,
     pub installers: Vec<MatchedInstaller>,
     pub possible_installer_files: Vec<Utf8PathBuf>,
 }
@@ -92,6 +96,7 @@ pub(super) async fn analyze_sources(
     downloader: Arc<Downloader>,
     concurrency: NonZeroUsize,
     sources: Vec<ParsedInstallerSource>,
+    font_version: bool,
     manifest: Option<&InstallerManifest>,
 ) -> Result<Vec<ArtifactAnalysis>> {
     let mut unique_urls = IndexMap::new();
@@ -133,6 +138,7 @@ pub(super) async fn analyze_sources(
                     let analysis = analyze_download(
                         file,
                         &source_key.nested_installer_matches,
+                        font_version,
                         source_key.installer_type,
                     )?;
                     Ok::<_, color_eyre::Report>((source_key, analysis))
@@ -183,23 +189,29 @@ struct AnalysisKey {
 fn analyze_download(
     mut file: DownloadedFile,
     nested_installer_matches: &[String],
+    font_version: bool,
     installer_type: Option<InstallerType>,
 ) -> Result<ArtifactAnalysis> {
-    let file_name = file.download.file_name.clone();
-    let mut analyzer = Analyzer::with_installer_type(&mut file.file, &file_name, installer_type)
-        .wrap_err_with(|| format!("Failed to analyze {file_name}"))?;
+    let architecture = file.download.url().override_architecture().or_else(|| Architecture::from_url(file.download.url().as_str()));
+    let file_name = file.download.file_name().to_owned();
+    let mut analyzer = Analyzer::with_installer_type(
+        &mut file.file,
+        &file_name,
+        if font_version {
+            FontAnalysis::Version
+        } else {
+            FontAnalysis::None
+        },
+        installer_type,
+    )
+    .wrap_err_with(|| format!("Failed to analyze {file_name}"))?;
 
     let mut installers = if let Some(zip) = &mut analyzer.zip
         && !nested_installer_matches.is_empty()
     {
         let matched = zip
             .analyze_matches_with_metadata(nested_installer_matches)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to analyze matching installers in {}",
-                    file.file_name
-                )
-            })?;
+            .wrap_err_with(|| format!("Failed to analyze matching installers in {file_name}"))?;
 
         analyzer.file_version = first_non_empty(
             matched
@@ -215,6 +227,13 @@ fn analyze_download(
         )
         .map(str::to_owned)
         .or(analyzer.product_version);
+        analyzer.font_version = first_non_empty(
+            matched
+                .iter()
+                .filter_map(|analysis| analysis.font_version.as_deref()),
+        )
+        .map(str::to_owned)
+        .or(analyzer.font_version);
         matched
     } else {
         analyzer
@@ -224,20 +243,17 @@ fn analyze_download(
                 installer,
                 file_version: analyzer.file_version.clone(),
                 product_version: analyzer.product_version.clone(),
+                font_version: analyzer.font_version.clone(),
             })
             .collect()
     };
 
-    let architecture = file
-        .url
-        .override_architecture()
-        .or_else(|| winget_types::installer::Architecture::from_url(file.url.as_str()));
     for analysis in &mut installers {
         let installer = &mut analysis.installer;
         if let Some(architecture) = architecture {
             installer.architecture = architecture;
         }
-        installer.url = file.url.inner().clone();
+        installer.url = file.download.url().inner().clone();
         installer.sha_256 = file.sha_256.clone();
         installer.release_date = file.last_modified;
     }
@@ -249,11 +265,12 @@ fn analyze_download(
         .unwrap_or_default();
 
     Ok(ArtifactAnalysis {
-        url: file.url.into_inner(),
+        url: file.download.into_url().into_inner(),
         sha256: file.sha_256,
         release_date: file.last_modified,
         file_version: analyzer.file_version,
         product_version: analyzer.product_version,
+        font_version: analyzer.font_version,
         installers,
         possible_installer_files,
     })
@@ -272,6 +289,7 @@ impl From<ArtifactAnalysis> for AnalyzedArtifact {
             versions: DetectedVersions {
                 file: analysis.file_version,
                 product: analysis.product_version,
+                font: analysis.font_version,
             },
             installers: analysis
                 .installers
@@ -289,6 +307,7 @@ impl From<MatchedInstaller> for AnalyzedInstaller {
             versions: DetectedVersions {
                 file: analysis.file_version,
                 product: analysis.product_version,
+                font: analysis.font_version,
             },
             locale: installer.locale.map(|locale| locale.to_string()),
             architecture: installer.architecture.to_string(),
@@ -374,9 +393,11 @@ mod tests {
             installer: Installer::default(),
             file_version: Some("1.2.3.4".to_owned()),
             product_version: Some("1.2.3".to_owned()),
+            font_version: Some("Version 1.234".to_owned()),
         });
 
         assert_eq!(installer.versions.file.as_deref(), Some("1.2.3.4"));
         assert_eq!(installer.versions.product.as_deref(), Some("1.2.3"));
+        assert_eq!(installer.versions.font.as_deref(), Some("Version 1.234"));
     }
 }
