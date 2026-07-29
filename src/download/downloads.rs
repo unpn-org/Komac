@@ -15,7 +15,10 @@ use winget_types::{
 };
 
 use super::DownloadedFile;
-use crate::{analysis::Analyzer, traits::InstallerManifestExt};
+use crate::{
+    analysis::{Analyzer, installers::font::FontAnalysis},
+    traits::InstallerManifestExt,
+};
 
 #[derive(Default)]
 pub struct Downloads(Vec<DownloadedFile>);
@@ -63,6 +66,7 @@ impl Downloads {
                 let mut file_analyzer = Analyzer::with_installer_type(
                     file,
                     &download.file_name,
+                    FontAnalysis::None,
                     previous_installer.and_then(|installer| installer.r#type),
                     &nested_installer_files,
                 )?;
