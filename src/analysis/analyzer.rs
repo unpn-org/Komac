@@ -11,11 +11,12 @@ use winget_types::{
     utils::ValidFileExtensions,
 };
 
-use super::PeInfo;
+use super::{FontInfo, PeInfo};
 use crate::analysis::{
     Installers,
     installers::{
         Exe, Font, Msi, Zip,
+        font::FontAnalysis,
         msix_family::{Msix, bundle::MsixBundle},
     },
 };
@@ -29,13 +30,19 @@ pub struct Analyzer<'reader, R: Read + Seek> {
     pub file_version: Option<String>,
     #[allow(dead_code)]
     pub product_version: Option<String>,
+    pub font_version: Option<String>,
+    pub font_info: Option<FontInfo>,
     pub pe_info: Option<PeInfo>,
     pub installers: Vec<Installer>,
     pub zip: Option<Zip<&'reader mut R>>,
 }
 
 impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
-    pub fn new(reader: &'reader mut R, file_name: &str) -> Result<Self> {
+    pub(crate) fn new(
+        reader: &'reader mut R,
+        file_name: &str,
+        font_analysis: FontAnalysis,
+    ) -> Result<Self> {
         let extension = ValidFileExtensions::from_path(Utf8Path::new(file_name))?;
 
         let installers = match extension {
@@ -47,7 +54,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                 MsixBundle::new(reader)?.installers()
             }
             ValidFileExtensions::Zip => {
-                let mut scoped_zip = Zip::new(reader)?;
+                let mut scoped_zip = Zip::new(reader, font_analysis)?;
                 let installers = mem::take(&mut scoped_zip.installers);
                 return Ok(Self {
                     installers,
@@ -81,7 +88,23 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
             | ValidFileExtensions::Otc
             | ValidFileExtensions::Otf
             | ValidFileExtensions::Ttc
-            | ValidFileExtensions::Ttf => Font::new(reader, file_name)?.installers(),
+            | ValidFileExtensions::Ttf => {
+                let font = Font::new(reader, file_name, font_analysis)?;
+                let installers = font.installers();
+                let (font_version, font_info) = match font_analysis {
+                    FontAnalysis::Version => {
+                        (font.info.and_then(FontInfo::into_font_version), None)
+                    }
+                    FontAnalysis::Full => (None, font.info),
+                    FontAnalysis::None => (None, None),
+                };
+                return Ok(Self {
+                    installers,
+                    font_version,
+                    font_info,
+                    ..Self::default()
+                });
+            }
         };
         Ok(Self {
             installers,
@@ -104,6 +127,8 @@ impl<R: Read + Seek> Default for Analyzer<'_, R> {
             publisher: None,
             file_version: None,
             product_version: None,
+            font_version: None,
+            font_info: None,
             pe_info: None,
             installers: Vec::default(),
             zip: None,

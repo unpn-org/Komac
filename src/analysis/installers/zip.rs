@@ -22,6 +22,7 @@ use winget_types::{
 use zip::ZipArchive;
 
 use super::super::Analyzer;
+use super::font::FontAnalysis;
 #[cfg(feature = "cli")]
 use crate::prompts::handle_inquire_error;
 use crate::traits::path::LowercaseExtension;
@@ -109,6 +110,7 @@ fn glob_to_regex(pattern: &str) -> String {
 
 pub struct Zip<R: Read + Seek> {
     archive: ZipArchive<R>,
+    font_analysis: FontAnalysis,
     pub possible_installer_files: Vec<Utf8PathBuf>,
     pub installers: Vec<Installer>,
 }
@@ -119,10 +121,12 @@ pub struct MatchedInstaller {
     pub file_version: Option<String>,
     #[allow(dead_code)]
     pub product_version: Option<String>,
+    #[allow(dead_code)]
+    pub font_version: Option<String>,
 }
 
 impl<R: Read + Seek> Zip<R> {
-    pub fn new(reader: R) -> Result<Self> {
+    pub(crate) fn new(reader: R, font_analysis: FontAnalysis) -> Result<Self> {
         let mut zip = ZipArchive::new(reader)?;
 
         let possible_installer_files = zip
@@ -151,7 +155,8 @@ impl<R: Read + Seek> Zip<R> {
                 relative_file_path: chosen_file_name.lowercase_extension(),
                 portable_command_alias: None,
             }]);
-            let file_installers = Self::analyze_nested_file_in_archive(&mut zip, chosen_file_name)?;
+            let file_installers =
+                Self::analyze_nested_file_in_archive(&mut zip, chosen_file_name, font_analysis)?;
 
             file_installers
                 .into_iter()
@@ -173,6 +178,7 @@ impl<R: Read + Seek> Zip<R> {
 
         Ok(Self {
             archive: zip,
+            font_analysis,
             possible_installer_files,
             installers,
         })
@@ -192,9 +198,10 @@ impl<R: Read + Seek> Zip<R> {
             let first_file_installers = Self::analyze_nested_file_in_archive(
                 &mut self.archive,
                 chosen_paths.next().unwrap(),
+                self.font_analysis,
             )?;
             for path in chosen_paths {
-                Self::analyze_nested_file_in_archive(&mut self.archive, path)?;
+                Self::analyze_nested_file_in_archive(&mut self.archive, path, self.font_analysis)?;
             }
             let first_file_is_portable = first_file_installers
                 .first()
@@ -237,10 +244,13 @@ impl<R: Read + Seek> Zip<R> {
         let Some((first_path, remaining_paths)) = chosen.split_first() else {
             return Ok(());
         };
-        let first_file_installers =
-            Self::analyze_nested_file_in_archive(&mut self.archive, first_path)?;
+        let first_file_installers = Self::analyze_nested_file_in_archive(
+            &mut self.archive,
+            first_path,
+            self.font_analysis,
+        )?;
         for path in remaining_paths {
-            Self::analyze_nested_file_in_archive(&mut self.archive, path)?;
+            Self::analyze_nested_file_in_archive(&mut self.archive, path, self.font_analysis)?;
         }
         let nested_installer_files = chosen
             .into_iter()
@@ -292,18 +302,19 @@ impl<R: Read + Seek> Zip<R> {
                 temp_file.seek(SeekFrom::Start(0))?;
 
                 let nested_analyzer =
-                    Analyzer::new(&mut temp_file, path.as_str()).map_err(|source| {
-                        InvalidNestedInstallerError {
+                    Analyzer::new(&mut temp_file, path.as_str(), self.font_analysis).map_err(
+                        |source| InvalidNestedInstallerError {
                             path: path.clone(),
                             source: source.into(),
-                        }
-                    })?;
+                        },
+                    )?;
                 let nested_installer_files = BTreeSet::from([NestedInstallerFiles {
                     relative_file_path: path.lowercase_extension(),
                     portable_command_alias: None,
                 }]);
                 let file_version = nested_analyzer.file_version;
                 let product_version = nested_analyzer.product_version;
+                let font_version = nested_analyzer.font_version;
 
                 Ok(nested_analyzer
                     .installers
@@ -316,14 +327,11 @@ impl<R: Read + Seek> Zip<R> {
                         nested_installer_files: nested_installer_files.clone(),
                         ..installer
                     })
-                    .map({
-                        let file_version = file_version.clone();
-                        let product_version = product_version.clone();
-                        move |installer| MatchedInstaller {
-                            installer,
-                            file_version: file_version.clone(),
-                            product_version: product_version.clone(),
-                        }
+                    .map(move |installer| MatchedInstaller {
+                        installer,
+                        file_version: file_version.clone(),
+                        product_version: product_version.clone(),
+                        font_version: font_version.clone(),
                     }))
             })
             .collect::<Result<Vec<_>>>()?
@@ -337,17 +345,19 @@ impl<R: Read + Seek> Zip<R> {
     fn analyze_nested_file_in_archive(
         archive: &mut ZipArchive<R>,
         path: &Utf8Path,
+        font_analysis: FontAnalysis,
     ) -> Result<Vec<Installer>> {
         let mut chosen_file = archive.by_name(path.as_str())?;
         let mut temp_file = tempfile::tempfile()?;
         io::copy(&mut chosen_file, &mut temp_file)?;
         temp_file.seek(SeekFrom::Start(0))?;
-        let analyzer = Analyzer::new(&mut temp_file, path.as_str()).map_err(|source| {
-            InvalidNestedInstallerError {
-                path: path.to_owned(),
-                source: source.into(),
-            }
-        })?;
+        let analyzer =
+            Analyzer::new(&mut temp_file, path.as_str(), font_analysis).map_err(|source| {
+                InvalidNestedInstallerError {
+                    path: path.to_owned(),
+                    source: source.into(),
+                }
+            })?;
         Ok(analyzer.installers)
     }
 }
@@ -361,7 +371,7 @@ mod tests {
 
     use super::*;
 
-    const TTF_SIGNATURE: [u8; 4] = [0x00, 0x01, 0x00, 0x00];
+    const EMPTY_TTF: [u8; 12] = [0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
 
     fn zip_with_files(files: &[(&str, &[u8])]) -> Result<Vec<u8>> {
         let mut buffer = Cursor::new(Vec::new());
@@ -383,8 +393,8 @@ mod tests {
 
     #[test]
     fn selected_nested_files_reject_invalid_file_with_valid_extension() -> Result<()> {
-        let zip_bytes = zip_with_files(&[("valid.ttf", &TTF_SIGNATURE), ("invalid.ttf", b"nope")])?;
-        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+        let zip_bytes = zip_with_files(&[("valid.ttf", &EMPTY_TTF), ("invalid.ttf", b"nope")])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes), FontAnalysis::Full)?;
         let selected_files = [
             Utf8PathBuf::from("valid.ttf"),
             Utf8PathBuf::from("invalid.ttf"),
@@ -392,7 +402,9 @@ mod tests {
 
         let error = selected_files
             .iter()
-            .map(|path| Zip::analyze_nested_file_in_archive(&mut zip.archive, path))
+            .map(|path| {
+                Zip::analyze_nested_file_in_archive(&mut zip.archive, path, FontAnalysis::Full)
+            })
             .collect::<Result<Vec<_>>>()
             .unwrap_err();
 
@@ -406,13 +418,17 @@ mod tests {
     #[test]
     fn selected_nested_file_accepts_valid_file() -> Result<()> {
         let zip_bytes = zip_with_files(&[
-            ("valid.ttf", &TTF_SIGNATURE),
+            ("valid.ttf", &EMPTY_TTF),
             ("ignored.txt", b"not an installer"),
         ])?;
-        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes), FontAnalysis::Full)?;
         let selected_file = Utf8PathBuf::from("valid.ttf");
 
-        let installers = Zip::analyze_nested_file_in_archive(&mut zip.archive, &selected_file)?;
+        let installers = Zip::analyze_nested_file_in_archive(
+            &mut zip.archive,
+            &selected_file,
+            FontAnalysis::Full,
+        )?;
 
         assert_eq!(installers[0].r#type, Some(InstallerType::Font));
         Ok(())
@@ -421,11 +437,11 @@ mod tests {
     #[test]
     fn select_all_uses_every_nested_installer_file() -> Result<()> {
         let zip_bytes = zip_with_files(&[
-            ("first.ttf", &TTF_SIGNATURE),
-            ("nested/second.TTF", &TTF_SIGNATURE),
+            ("first.ttf", &EMPTY_TTF),
+            ("nested/second.TTF", &EMPTY_TTF),
             ("ignored.txt", b"not an installer"),
         ])?;
-        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes), FontAnalysis::Full)?;
 
         zip.select_all()?;
 
@@ -444,8 +460,8 @@ mod tests {
 
     #[test]
     fn select_all_rejects_invalid_nested_installer_file() -> Result<()> {
-        let zip_bytes = zip_with_files(&[("valid.ttf", &TTF_SIGNATURE), ("invalid.ttf", b"nope")])?;
-        let mut zip = Zip::new(Cursor::new(zip_bytes))?;
+        let zip_bytes = zip_with_files(&[("valid.ttf", &EMPTY_TTF), ("invalid.ttf", b"nope")])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes), FontAnalysis::Full)?;
 
         let error = zip.select_all().unwrap_err();
 
@@ -461,14 +477,47 @@ mod tests {
         let zip_bytes = zip_with_files(&[
             ("first.exe", b"not an exe"),
             ("second.exe", b"not an exe"),
-            ("valid.ttf", &TTF_SIGNATURE),
+            ("valid.ttf", &EMPTY_TTF),
         ])?;
 
-        let zip = Zip::new(Cursor::new(zip_bytes))?;
+        let zip = Zip::new(Cursor::new(zip_bytes), FontAnalysis::Full)?;
 
         assert_eq!(zip.installers[0].r#type, Some(InstallerType::Zip));
         assert_eq!(zip.installers[0].nested_installer_type, None);
         assert!(zip.installers[0].nested_installer_files.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn version_analysis_reads_only_selected_nested_font() -> Result<()> {
+        let value = "Version 4.2"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>();
+        let name_table_length = 18 + value.len();
+        let mut valid = vec![0; 28 + name_table_length];
+        valid[..4].copy_from_slice(&EMPTY_TTF[..4]);
+        valid[4..6].copy_from_slice(&1u16.to_be_bytes());
+        valid[12..16].copy_from_slice(b"name");
+        valid[20..24].copy_from_slice(&28u32.to_be_bytes());
+        valid[24..28].copy_from_slice(&(name_table_length as u32).to_be_bytes());
+        valid[30..32].copy_from_slice(&1u16.to_be_bytes());
+        valid[32..34].copy_from_slice(&18u16.to_be_bytes());
+        valid[34..36].copy_from_slice(&3u16.to_be_bytes());
+        valid[36..38].copy_from_slice(&1u16.to_be_bytes());
+        valid[38..40].copy_from_slice(&0x0409u16.to_be_bytes());
+        valid[40..42].copy_from_slice(&5u16.to_be_bytes());
+        valid[42..44].copy_from_slice(&(value.len() as u16).to_be_bytes());
+        valid[46..].copy_from_slice(&value);
+        let mut invalid = EMPTY_TTF;
+        invalid[4..6].copy_from_slice(&1u16.to_be_bytes());
+        let zip_bytes = zip_with_files(&[("selected.ttf", &valid), ("ignored.ttf", &invalid)])?;
+        let mut zip = Zip::new(Cursor::new(zip_bytes), FontAnalysis::Version)?;
+
+        let analyses = zip.analyze_matches_with_metadata(&["selected.ttf".to_owned()])?;
+
+        assert_eq!(analyses.len(), 1);
+        assert_eq!(analyses[0].font_version.as_deref(), Some("4.2"));
         Ok(())
     }
 }

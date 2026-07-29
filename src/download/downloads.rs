@@ -10,7 +10,7 @@ use tracing::debug;
 use winget_types::{installer::Architecture, url::DecodedUrl};
 
 use super::DownloadedFile;
-use crate::analysis::Analyzer;
+use crate::analysis::{Analyzer, installers::font::FontAnalysis};
 
 #[derive(Default)]
 pub struct Downloads(Vec<DownloadedFile>);
@@ -41,7 +41,7 @@ impl Downloads {
                  last_modified,
                  ..
              }| async move {
-                let mut file_analyzer = Analyzer::new(file, file_name)?;
+                let mut file_analyzer = Analyzer::new(file, file_name, FontAnalysis::None)?;
                 let architecture = url
                     .override_architecture()
                     .or_else(|| Architecture::from_url(url.as_str()));

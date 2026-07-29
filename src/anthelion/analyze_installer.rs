@@ -16,7 +16,7 @@ use super::types::{
     AnalyzedArtifact, AnalyzedInstaller, AppsAndFeaturesEntry, DetectedVersions, InstallerSource,
 };
 use crate::{
-    analysis::Analyzer,
+    analysis::{Analyzer, installers::font::FontAnalysis},
     download::{DownloadedFile, Downloader},
     manifests::Url,
 };
@@ -28,6 +28,7 @@ pub struct ArtifactAnalysis {
     pub release_date: Option<chrono::NaiveDate>,
     pub file_version: Option<String>,
     pub product_version: Option<String>,
+    pub font_version: Option<String>,
     pub installers: Vec<InstallerAnalysis>,
     pub possible_installer_files: Vec<Utf8PathBuf>,
 }
@@ -37,6 +38,7 @@ pub struct InstallerAnalysis {
     pub installer: Installer,
     pub file_version: Option<String>,
     pub product_version: Option<String>,
+    pub font_version: Option<String>,
 }
 
 pub(super) struct ParsedInstallerSource {
@@ -96,6 +98,7 @@ pub(super) async fn analyze_sources(
     downloader: Arc<Downloader>,
     concurrency: NonZeroUsize,
     sources: Vec<ParsedInstallerSource>,
+    font_version: bool,
 ) -> AnthelionResult<Vec<ArtifactAnalysis>> {
     let parsed_sources = sources
         .into_iter()
@@ -136,7 +139,8 @@ pub(super) async fn analyze_sources(
                     ))
                 })?;
                 let (source_key, analysis) = tokio::task::spawn_blocking(move || {
-                    let analysis = analyze_download(file, &source_key.nested_installer_matches)?;
+                    let analysis =
+                        analyze_download(file, &source_key.nested_installer_matches, font_version)?;
                     Ok::<_, AnthelionError>((source_key, analysis))
                 })
                 .await
@@ -190,8 +194,18 @@ struct AnalysisKey {
 fn analyze_download(
     mut file: DownloadedFile,
     nested_installer_matches: &[String],
+    font_version: bool,
 ) -> AnthelionResult<ArtifactAnalysis> {
-    let mut analyzer = Analyzer::new(&mut file.file, &file.file_name).map_err(|error| {
+    let mut analyzer = Analyzer::new(
+        &mut file.file,
+        &file.file_name,
+        if font_version {
+            FontAnalysis::Version
+        } else {
+            FontAnalysis::None
+        },
+    )
+    .map_err(|error| {
         AnthelionError::failure(error.wrap_err(format!("Failed to analyze {}", file.file_name)))
     })?;
 
@@ -219,6 +233,12 @@ fn analyze_download(
                 .filter_map(|analysis| analysis.product_version.clone()),
         )
         .or(analyzer.product_version);
+        analyzer.font_version = first_non_empty(
+            matched
+                .iter()
+                .filter_map(|analysis| analysis.font_version.clone()),
+        )
+        .or(analyzer.font_version);
         Some(matched)
     } else {
         None
@@ -231,6 +251,7 @@ fn analyze_download(
                 installer: analysis.installer,
                 file_version: analysis.file_version,
                 product_version: analysis.product_version,
+                font_version: analysis.font_version,
             })
             .collect()
     } else {
@@ -241,6 +262,7 @@ fn analyze_download(
                 installer,
                 file_version: analyzer.file_version.clone(),
                 product_version: analyzer.product_version.clone(),
+                font_version: analyzer.font_version.clone(),
             })
             .collect()
     };
@@ -271,6 +293,7 @@ fn analyze_download(
         release_date: file.last_modified,
         file_version: analyzer.file_version,
         product_version: analyzer.product_version,
+        font_version: analyzer.font_version,
         installers,
         possible_installer_files,
     })
@@ -298,6 +321,7 @@ impl From<ArtifactAnalysis> for AnalyzedArtifact {
             versions: DetectedVersions {
                 file: analysis.file_version,
                 product: analysis.product_version,
+                font: analysis.font_version,
             },
             installers: analysis
                 .installers
@@ -315,6 +339,7 @@ impl From<InstallerAnalysis> for AnalyzedInstaller {
             versions: DetectedVersions {
                 file: analysis.file_version,
                 product: analysis.product_version,
+                font: analysis.font_version,
             },
             locale: installer.locale.map(|locale| locale.to_string()),
             architecture: installer.architecture.to_string(),
@@ -384,9 +409,11 @@ mod tests {
             installer: Installer::default(),
             file_version: Some("1.2.3.4".to_owned()),
             product_version: Some("1.2.3".to_owned()),
+            font_version: Some("Version 1.234".to_owned()),
         });
 
         assert_eq!(installer.versions.file.as_deref(), Some("1.2.3.4"));
         assert_eq!(installer.versions.product.as_deref(), Some("1.2.3"));
+        assert_eq!(installer.versions.font.as_deref(), Some("Version 1.234"));
     }
 }
