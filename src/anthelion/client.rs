@@ -108,6 +108,7 @@ impl Komac {
             Arc::clone(&self.downloader),
             self.concurrency,
             parse_installer_inputs(installers).map_err(to_napi_error)?,
+            true,
             None,
         )
         .await
@@ -150,7 +151,7 @@ impl Komac {
                         GitHubPullRequestState::Merged => "merged",
                     })
                     .to_owned(),
-                    created_at: pull_request.created_at.to_rfc3339(),
+                    created_at: pull_request.created_at.to_string(),
                 })
             })
     }

@@ -11,7 +11,7 @@ use winget_types::{installer::{Architecture, InstallerManifest}, url::DecodedUrl
 
 use super::DownloadedFile;
 use crate::{
-    analysis::Analyzer,
+    analysis::{Analyzer, installers::font::FontAnalysis},
     traits::InstallerManifestExt,
 };
 
@@ -46,14 +46,14 @@ impl Downloads {
                  last_modified,
                  ..
              }| async move {
-                let architecture = download.url().override_architecture()
-                    .or_else(|| Architecture::from_url(download.url().as_str()));
+                let architecture = download.url().override_architecture().or_else(|| Architecture::from_url(download.url().as_str()));
                 let installer_type = manifest.and_then(|manifest| {
                     manifest.installer_type_for_url(download.url().inner(), architecture)
                 });
                 let mut file_analyzer = Analyzer::with_installer_type(
                     file,
                     &download.file_name,
+                    FontAnalysis::None,
                     installer_type,
                 )?;
                 for installer in &mut file_analyzer.installers {
