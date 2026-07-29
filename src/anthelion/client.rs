@@ -115,6 +115,7 @@ impl Komac {
             Arc::clone(&self.downloader),
             self.concurrency,
             parse_installer_inputs(installers)?,
+            true,
         )
         .await
         .map(|analyses| analyses.into_iter().map(AnalyzedArtifact::from).collect())
