@@ -10,7 +10,7 @@ use tracing::debug;
 use winget_types::{installer::Architecture, url::DecodedUrl};
 
 use super::DownloadedFile;
-use crate::analysis::Analyzer;
+use crate::analysis::{Analyzer, installers::font::FontAnalysis};
 
 #[derive(Default)]
 pub struct Downloads(Vec<DownloadedFile>);
@@ -43,6 +43,8 @@ impl Downloads {
                 let mut file_analyzer = Analyzer::new(file, &download.file_name)?;
                 let architecture = download
                     .url()
+                let mut file_analyzer = Analyzer::new(file, file_name, FontAnalysis::None)?;
+                let architecture = url
                     .override_architecture()
                     .or_else(|| Architecture::from_url(download.url().as_str()));
                 for installer in &mut file_analyzer.installers {
