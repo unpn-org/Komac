@@ -30,6 +30,7 @@ enum VersionSelector {
     ProductVersion,
     FileVersion,
     DisplayVersion,
+    FontVersion,
 }
 
 fn parse_version_selector(selection: &str) -> AnthelionResult<VersionSelector> {
@@ -42,6 +43,7 @@ fn parse_version_selector(selection: &str) -> AnthelionResult<VersionSelector> {
         "display" => VersionSelector::DisplayVersion,
         "product" => VersionSelector::ProductVersion,
         "file" => VersionSelector::FileVersion,
+        "fontVersion" => VersionSelector::FontVersion,
         value => VersionSelector::Explicit(Box::new(value.parse().map_err(|error| {
             AnthelionError::invalid(format!("Invalid package version: {error}"))
         })?)),
@@ -179,7 +181,12 @@ pub async fn update_package(
                 Ok(None)
             }
         },
-        analyze_sources(downloader, concurrency, installers),
+        analyze_sources(
+            downloader,
+            concurrency,
+            installers,
+            font && matches!(version_selector, VersionSelector::FontVersion),
+        ),
     )?;
 
     let installer_results = download_results
@@ -197,6 +204,11 @@ pub async fn update_package(
         download_results
             .iter()
             .filter_map(|analysis| analysis.file_version.as_deref()),
+    );
+    let font_version = first_non_empty(
+        download_results
+            .iter()
+            .filter_map(|analysis| analysis.font_version.as_deref()),
     );
     let display_version = installer_results
         .iter()
@@ -217,6 +229,9 @@ pub async fn update_package(
             "display",
             "DisplayVersion",
         )?,
+        VersionSelector::FontVersion => {
+            parse_detected_version(font_version, "fontVersion", "font version")?
+        }
     };
 
     let replace_version = resolve_replace_version(
@@ -323,7 +338,11 @@ fn parse_detected_version(
     source: &str,
     field: &str,
 ) -> AnthelionResult<PackageVersion> {
-    let analysis = "installer";
+    let analysis = if source == "fontVersion" {
+        "selected font"
+    } else {
+        "installer"
+    };
     value
         .ok_or_else(|| {
             AnthelionError::invalid(format!(
@@ -374,6 +393,10 @@ mod tests {
         assert!(matches!(
             parse_version_selector("1.2.3").unwrap(),
             VersionSelector::Explicit(_)
+        ));
+        assert!(matches!(
+            parse_version_selector("fontVersion").unwrap(),
+            VersionSelector::FontVersion
         ));
     }
 
