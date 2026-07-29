@@ -34,7 +34,7 @@ pub struct AnalyzedArtifact {
     pub sha256: String,
     /// HTTP last-modified date, when supplied by the server.
     pub release_date: Option<String>,
-    /// File version metadata detected in the artifact.
+    /// Version metadata detected in the artifact.
     pub versions: DetectedVersions,
     /// Installers represented by this artifact, including selected nested installers.
     pub installers: Vec<AnalyzedInstaller>,
@@ -47,6 +47,8 @@ pub struct DetectedVersions {
     pub file: Option<String>,
     /// PE `ProductVersion`, if present.
     pub product: Option<String>,
+    /// OpenType name ID 5, normalized for package-version use, if present.
+    pub font: Option<String>,
 }
 
 /// Installer information detected during analysis.
@@ -116,7 +118,7 @@ pub struct GitHubRelease {
 pub struct UpdatePackageRequest {
     /// Package identifier, for example `Microsoft.VisualStudioCode`.
     pub package_identifier: String,
-    /// Explicit package version, or `display`, `product`, or `file` to use detected metadata.
+    /// Explicit package version, or `display`, `product`, `file`, or `fontVersion` to use detected metadata.
     pub version: String,
     /// New installer artifacts.
     pub installers: Vec<Either<String, InstallerSource>>,
