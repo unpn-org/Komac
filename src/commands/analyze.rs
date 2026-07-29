@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256, digest::Output};
 use winget_types::{Sha256String, installer::Installer};
 
 use crate::{
-    analysis::{Analyzer, PeInfo},
+    analysis::{Analyzer, FontInfo, PeInfo, installers::font::FontAnalysis},
     manifests::{print_manifest, to_yaml_string},
 };
 
@@ -61,22 +61,32 @@ impl Analyze {
             })
             .transpose()?;
 
-        let mut analyzer = Analyzer::new(&mut file, file_name)?;
+        let mut analyzer = Analyzer::new(&mut file, file_name, FontAnalysis::Full)?;
         if let Some(sha_256) = sha_256 {
             for installer in &mut analyzer.installers {
                 installer.sha_256 = sha_256.clone();
             }
         }
-        let yaml = match (analyzer.pe_info.as_ref(), analyzer.installers.as_slice()) {
-            (Some(pe_info), [installer]) => {
+        let yaml = match (
+            analyzer.pe_info.as_ref(),
+            analyzer.font_info.as_ref(),
+            analyzer.installers.as_slice(),
+        ) {
+            (Some(pe_info), None, [installer]) => {
                 to_yaml_string(&AnalyzeSingleOutput { pe_info, installer })?
             }
-            (Some(pe_info), installers) => to_yaml_string(&AnalyzeMultiOutput {
+            (Some(pe_info), None, installers) => to_yaml_string(&AnalyzeMultiOutput {
                 pe_info,
                 installers,
             })?,
-            (None, [installer]) => to_yaml_string(installer)?,
-            (None, installers) => to_yaml_string(&installers)?,
+            (None, Some(font_info), [installer]) => to_yaml_string(&AnalyzeFontOutput {
+                font_info,
+                installer,
+            })?,
+            (None, Some(_), _) => unreachable!("font analysis always produces one installer"),
+            (None, None, [installer]) => to_yaml_string(installer)?,
+            (None, None, installers) => to_yaml_string(&installers)?,
+            (Some(_), Some(_), _) => unreachable!("a file cannot be both a PE and a font"),
         };
         let mut lock = stdout().lock();
         print_manifest(&mut lock, &yaml);
@@ -98,6 +108,13 @@ struct AnalyzeMultiOutput<'a> {
     #[serde(rename = "PEInfo")]
     pe_info: &'a PeInfo,
     installers: &'a [Installer],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct AnalyzeFontOutput<'a> {
+    font_info: &'a FontInfo,
+    installer: &'a Installer,
 }
 
 fn sha256_digest<R: Read>(mut reader: R) -> io::Result<Output<Sha256>> {
