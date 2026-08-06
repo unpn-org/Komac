@@ -189,8 +189,7 @@ impl NewVersion {
         let version = resolve_required(self.version, None::<&str>, non_interactive, "--version")?;
 
         let mut package = package.into_versioned(&version, &github).await?;
-        if !self.skip_pr_check && !self.dry_run && !package.prompt_existing_pr()? {
-        if self.skip_pr_check || dry_run || !package.prompt_existing_pr()? {
+        if !self.skip_pr_check && !dry_run && !package.prompt_existing_pr()? {
             return Ok(());
         }
 
