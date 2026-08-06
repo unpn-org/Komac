@@ -114,10 +114,26 @@ pub fn match_installers(
                     duplicate_elevation_scope(&previous_installer, previous_installers);
             }
 
+            // Nested installer metadata can change when an archive moves between one and multiple
+            // executable candidates, so prefer an available architecture match before scoring.
+            // Do not apply this to regular installers: universal executables are often repeated
+            // under several manifest architectures, while their PE architecture can differ by
+            // installer type (for example, an x86 NSIS stub and an x64 portable executable).
+            let has_matching_nested_architecture =
+                previous_installer.nested_installer_type.is_some()
+                    && new_installers.iter().any(|new_installer| {
+                        new_installer.architecture == previous_installer.architecture
+                    });
             let mut max_score = 0.0;
             let mut best_match = None;
 
             for new_installer in new_installers {
+                if has_matching_nested_architecture
+                    && new_installer.architecture != previous_installer.architecture
+                {
+                    continue;
+                }
+
                 let installer_url = &new_installer.url;
                 let mut score = 0.0;
                 if new_installer.architecture == previous_installer.architecture {
@@ -205,7 +221,10 @@ mod tests {
 
     use rstest::rstest;
     use winget_types::{
-        installer::{Architecture, ElevationRequirement, Installer, Scope},
+        installer::{
+            Architecture, ElevationRequirement, Installer, InstallerType, NestedInstallerType,
+            Scope,
+        },
         url::DecodedUrl,
     };
 
@@ -322,6 +341,88 @@ mod tests {
         let matched = HashMap::from([(Installer::default(), regular)]);
 
         assert!(unmatched_installers(&matched, &[bold]).is_empty());
+    }
+
+    #[test]
+    fn prefers_matching_architecture_over_nested_installer_type() {
+        let previous_x64 = Installer {
+            architecture: Architecture::X64,
+            r#type: Some(InstallerType::Zip),
+            nested_installer_type: Some(NestedInstallerType::Portable),
+            url: DecodedUrl::from_str(
+                "https://example.com/coreutils-0.9.0-x86_64-pc-windows-msvc.zip",
+            )
+            .unwrap(),
+            ..Installer::default()
+        };
+        let new_x86 = Installer {
+            architecture: Architecture::X86,
+            r#type: Some(InstallerType::Zip),
+            nested_installer_type: Some(NestedInstallerType::Portable),
+            url: DecodedUrl::from_str(
+                "https://example.com/coreutils-0.10.0-i686-pc-windows-msvc.zip",
+            )
+            .unwrap(),
+            ..Installer::default()
+        };
+        let new_x64 = Installer {
+            architecture: Architecture::X64,
+            r#type: Some(InstallerType::Zip),
+            url: DecodedUrl::from_str(
+                "https://example.com/coreutils-0.10.0-x86_64-pc-windows-msvc.zip",
+            )
+            .unwrap(),
+            ..Installer::default()
+        };
+
+        assert_eq!(
+            match_installers(
+                std::slice::from_ref(&previous_x64),
+                &[new_x86, new_x64.clone()],
+            ),
+            HashMap::from([(previous_x64, new_x64)])
+        );
+    }
+
+    #[test]
+    fn matches_non_nested_installers_by_type_before_detected_architecture() {
+        let previous_portable_x86 = Installer {
+            architecture: Architecture::X86,
+            r#type: Some(InstallerType::Portable),
+            url: DecodedUrl::from_str("https://example.com/App-Portable-1.0.exe").unwrap(),
+            ..Installer::default()
+        };
+        let previous_nsis_x64 = Installer {
+            architecture: Architecture::X64,
+            r#type: Some(InstallerType::Nullsoft),
+            scope: Some(Scope::User),
+            url: DecodedUrl::from_str("https://example.com/App-Installer-1.0.exe").unwrap(),
+            ..Installer::default()
+        };
+        let new_nsis_x86 = Installer {
+            architecture: Architecture::X86,
+            r#type: Some(InstallerType::Nullsoft),
+            scope: Some(Scope::User),
+            url: DecodedUrl::from_str("https://example.com/App-Installer-2.0.exe").unwrap(),
+            ..Installer::default()
+        };
+        let new_portable_x64 = Installer {
+            architecture: Architecture::X64,
+            r#type: Some(InstallerType::Portable),
+            url: DecodedUrl::from_str("https://example.com/App-Portable-2.0.exe").unwrap(),
+            ..Installer::default()
+        };
+
+        assert_eq!(
+            match_installers(
+                &[previous_portable_x86.clone(), previous_nsis_x64.clone()],
+                &[new_nsis_x86.clone(), new_portable_x64.clone()],
+            ),
+            HashMap::from([
+                (previous_portable_x86, new_portable_x64),
+                (previous_nsis_x64, new_nsis_x86),
+            ])
+        );
     }
 
     #[rstest]
