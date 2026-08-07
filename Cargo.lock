@@ -5690,7 +5690,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winget-types"
 version = "0.5.2"
-source = "git+https://github.com/UnownPlain/winget-types.git?branch=anthelion#aba471eae636dbf8189a33ffab320b02a6acc49a"
+source = "git+https://github.com/UnownPlain/winget-types.git?branch=anthelion#78d40430b916226e4c87402ec787963d7d713029"
 dependencies = [
  "base16ct",
  "bitflags 2.13.2",
