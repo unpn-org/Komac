@@ -11,6 +11,7 @@ use clap::Parser;
 use color_eyre::eyre::{Result, bail, eyre};
 use indicatif::ProgressBar;
 use inquire::CustomType;
+use itertools::Itertools;
 use ordinal::Ordinal;
 use owo_colors::OwoColorize;
 use secrecy::SecretString;
@@ -444,11 +445,28 @@ impl NewVersion {
         };
 
         installer_manifest
+            .apps_and_features_entries
+            .iter_mut()
+            .for_each(|entry| entry.deduplicate(&default_locale_manifest));
+
+        installer_manifest
             .installers
             .iter_mut()
             .flat_map(|installer| &mut installer.apps_and_features_entries)
             .for_each(|entry| entry.deduplicate(&default_locale_manifest));
 
+        installer_manifest.locale = None;
+        installer_manifest
+            .installers
+            .iter()
+            .flat_map(|installer| &installer.locale)
+            .all_equal()
+            .then(|| &mut installer_manifest.installers)
+            .into_iter()
+            .flatten()
+            .for_each(|installer| installer.locale = None);
+
+        // `optimize` sorts installers, so it must run after all installer mutations.
         installer_manifest.optimize();
 
         let manifests = Manifests {
