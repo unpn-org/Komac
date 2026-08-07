@@ -338,7 +338,6 @@ pub async fn update_package(
 
     manifests.installer.package_version = package_version.clone();
     manifests.installer.installers = installers;
-    manifests.installer.optimize();
 
     manifests.installer.locale = None;
     manifests
@@ -374,6 +373,9 @@ pub async fn update_package(
     if let Some(release_notes) = release_notes {
         manifests.default_locale.release_notes = Some(release_notes);
     }
+
+    // `optimize` sorts installers, so it must run after all installer mutations.
+    manifests.installer.optimize();
 
     let changes = manifests.create(&package_identifier, &package_version, None, font);
 
