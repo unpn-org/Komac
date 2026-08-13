@@ -7,7 +7,7 @@ use std::{
 use color_eyre::Result;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use tracing::debug;
-use winget_types::{installer::Architecture, url::DecodedUrl};
+use winget_types::url::DecodedUrl;
 
 use super::DownloadedFile;
 use crate::analysis::{Analyzer, installers::font::FontAnalysis};
@@ -40,13 +40,9 @@ impl Downloads {
                  last_modified,
                  ..
              }| async move {
-                let mut file_analyzer = Analyzer::new(file, &download.file_name)?;
-                let architecture = download
-                    .url()
-                let mut file_analyzer = Analyzer::new(file, file_name, FontAnalysis::None)?;
-                let architecture = url
-                    .override_architecture()
-                    .or_else(|| Architecture::from_url(download.url().as_str()));
+                let architecture = download.architecture();
+                let mut file_analyzer =
+                    Analyzer::new(file, &download.file_name, FontAnalysis::None)?;
                 for installer in &mut file_analyzer.installers {
                     if let Some(architecture) = architecture {
                         installer.architecture = architecture;
