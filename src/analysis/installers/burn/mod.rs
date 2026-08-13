@@ -213,7 +213,8 @@ impl Installers for Burn {
                         msi_package.provides.iter().find_map(Provides::display_name),
                     )
                     .maybe_publisher(manifest.registration.arp.publisher())
-                    .display_version(msi_package.version().clone())
+                    // The bundle is the main ARP entry. Chained package versions can differ from
+                    // the bundle version and cause winget to infer an invalid version range.
                     .product_code(msi_package.product_code())
                     .maybe_upgrade_code(msi_package.upgrade_code())
                     .installer_type(
@@ -258,5 +259,82 @@ impl Installers for Burn {
                 .unwrap_or_default(),
             ..Installer::default()
         }]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_bundle_arp_entry_has_display_version() {
+        let manifest = from_str(
+            r#"
+            <BurnManifest>
+                <Registration
+                    Code="00000000-0000-0000-0000-000000000001"
+                    ExecutableName="setup.exe"
+                    PerMachine="yes"
+                    Tag=""
+                    Version="10.0.0"
+                    ProviderKey="bundle-provider"
+                >
+                    <Arp
+                        Register="yes"
+                        DisplayName="Example Bundle"
+                        DisplayVersion="10.0.0"
+                        Publisher="Example Publisher"
+                    />
+                </Registration>
+                <Chain>
+                    <MsiPackage
+                        Id="first.msi"
+                        CacheId="first"
+                        InstallSize="1"
+                        Size="1"
+                        ProductCode="{00000000-0000-0000-0000-000000000002}"
+                        Language="1033"
+                        Version="1.0.0"
+                    >
+                        <Provides Key="first" DisplayName="First Package" />
+                    </MsiPackage>
+                    <MsiPackage
+                        Id="second.msi"
+                        CacheId="second"
+                        InstallSize="1"
+                        Size="1"
+                        ProductCode="{00000000-0000-0000-0000-000000000003}"
+                        Language="1033"
+                        Version="2.0.0"
+                    >
+                        <Provides Key="second" DisplayName="Second Package" />
+                    </MsiPackage>
+                </Chain>
+            </BurnManifest>
+            "#,
+        )
+        .unwrap();
+        let burn = Burn {
+            architecture: Architecture::X64,
+            manifest: Some(manifest),
+            msi: None,
+        };
+
+        let installers = burn.installers();
+        let entries = installers[0]
+            .apps_and_features_entries
+            .iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries[0].display_version().map(ToString::to_string),
+            Some("10.0.0".to_owned())
+        );
+        assert!(
+            entries[1..]
+                .iter()
+                .all(|entry| entry.display_version().is_none())
+        );
     }
 }
