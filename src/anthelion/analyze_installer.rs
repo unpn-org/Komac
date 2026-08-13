@@ -196,6 +196,7 @@ fn analyze_download(
     nested_installer_matches: &[String],
     font_version: bool,
 ) -> AnthelionResult<ArtifactAnalysis> {
+    let architecture = file.architecture();
     let mut analyzer = Analyzer::new(
         &mut file.file,
         &file.file_name,
@@ -267,10 +268,6 @@ fn analyze_download(
             .collect()
     };
 
-    let architecture = file
-        .url
-        .override_architecture()
-        .or_else(|| winget_types::installer::Architecture::from_url(file.url.as_str()));
     for analysis in &mut installers {
         let installer = &mut analysis.installer;
         if let Some(architecture) = architecture {
