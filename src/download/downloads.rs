@@ -7,7 +7,7 @@ use std::{
 use color_eyre::Result;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use tracing::debug;
-use winget_types::{installer::{Architecture, InstallerManifest}, url::DecodedUrl};
+use winget_types::{installer::InstallerManifest, url::DecodedUrl};
 
 use super::DownloadedFile;
 use crate::{
@@ -46,7 +46,7 @@ impl Downloads {
                  last_modified,
                  ..
              }| async move {
-                let architecture = download.url().override_architecture().or_else(|| Architecture::from_url(download.url().as_str()));
+                let architecture = download.architecture();
                 let installer_type = manifest.and_then(|manifest| {
                     manifest.installer_type_for_url(download.url().inner(), architecture)
                 });
