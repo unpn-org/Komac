@@ -184,9 +184,11 @@ fn analyze_download(
     nested_installer_matches: &[String],
     font_version: bool,
 ) -> AnthelionResult<ArtifactAnalysis> {
+    let architecture = file.architecture();
+    let file_name = file.download.file_name().to_owned();
     let mut analyzer = Analyzer::new(
         &mut file.file,
-        &file.file_name,
+        &file_name,
         if font_version {
             FontAnalysis::Version
         } else {
@@ -194,7 +196,7 @@ fn analyze_download(
         },
     )
     .map_err(|error| {
-        AnthelionError::Failure(error.wrap_err(format!("Failed to analyze {}", file.file_name)))
+        AnthelionError::Failure(error.wrap_err(format!("Failed to analyze {file_name}")))
     })?;
 
     let mut installers = if let Some(zip) = &mut analyzer.zip
@@ -205,7 +207,7 @@ fn analyze_download(
             .map_err(|error| {
                 AnthelionError::Failure(error.wrap_err(format!(
                     "Failed to analyze matching installers in {}",
-                    file.file_name
+                    file_name
                 )))
             })?;
 
@@ -244,16 +246,12 @@ fn analyze_download(
             .collect()
     };
 
-    let architecture = file
-        .url
-        .override_architecture()
-        .or_else(|| winget_types::installer::Architecture::from_url(file.url.as_str()));
     for analysis in &mut installers {
         let installer = &mut analysis.installer;
         if let Some(architecture) = architecture {
             installer.architecture = architecture;
         }
-        installer.url = file.url.inner().clone();
+        installer.url = file.download.url().inner().clone();
         installer.sha_256 = file.sha_256.clone();
         installer.release_date = file.last_modified;
     }
@@ -265,7 +263,7 @@ fn analyze_download(
         .unwrap_or_default();
 
     Ok(ArtifactAnalysis {
-        url: file.url.into_inner(),
+        url: file.download.into_url().into_inner(),
         sha256: file.sha_256,
         release_date: file.last_modified,
         file_version: analyzer.file_version,
