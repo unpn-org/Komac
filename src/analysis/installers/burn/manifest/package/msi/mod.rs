@@ -46,11 +46,6 @@ impl MsiPackage {
     }
 
     #[inline]
-    pub const fn version(&self) -> &Version {
-        &self.version
-    }
-
-    #[inline]
     pub fn upgrade_code(&self) -> Option<&str> {
         self.upgrade_code.as_deref()
     }
