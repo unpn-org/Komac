@@ -213,7 +213,8 @@ impl Installers for Burn {
                         msi_package.provides.iter().find_map(Provides::display_name),
                     )
                     .maybe_publisher(manifest.registration.arp.publisher())
-                    .display_version(msi_package.version().clone())
+                    // The bundle is the main ARP entry. Chained package versions can differ from
+                    // the bundle version and cause winget to infer an invalid version range.
                     .product_code(msi_package.product_code())
                     .maybe_upgrade_code(msi_package.upgrade_code())
                     .installer_type(
