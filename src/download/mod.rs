@@ -11,6 +11,7 @@ pub use downloads::Downloads;
 pub use file::DownloadedFile;
 pub use pre_download::PreDownload;
 use reqwest::{Response, header::LAST_MODIFIED};
+use winget_types::{installer::Architecture, utils::ValidFileExtensions};
 
 use crate::manifests::Url;
 
@@ -44,6 +45,33 @@ impl Download {
         &mut self.url
     }
 
+    #[inline]
+    pub fn file_name(&self) -> &str {
+        &self.file_name
+    }
+
+    #[inline]
+    pub fn into_url(self) -> Url {
+        self.url
+    }
+
+    pub fn architecture(&self) -> Option<Architecture> {
+        Self::architecture_for(&self.url, &self.file_name)
+    }
+
+    fn architecture_for(url: &Url, file_name: &str) -> Option<Architecture> {
+        url.override_architecture().or_else(|| {
+            if matches!(
+                file_name.parse(),
+                Ok(ValidFileExtensions::MsixBundle | ValidFileExtensions::AppxBundle)
+            ) {
+                None
+            } else {
+                Architecture::from_url(url.as_str())
+            }
+        })
+    }
+
     /// Returns the last modified response header as a [`NaiveDate`].
     pub fn last_modified(&self) -> Option<NaiveDate> {
         self.response.as_ref().and_then(|response| {
@@ -65,5 +93,50 @@ impl Download {
 impl fmt::Display for Download {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.url.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn does_not_infer_architecture_for_bundle_with_extensionless_url() {
+        let url = "https://example.com/download/WinDirStat_x86_x64_arm64"
+            .parse::<Url>()
+            .unwrap();
+
+        assert_eq!(
+            Architecture::from_url(url.as_str()),
+            Some(Architecture::Arm64)
+        );
+        assert_eq!(
+            Download::architecture_for(&url, "application.msixbundle"),
+            None
+        );
+    }
+
+    #[test]
+    fn allows_explicit_architecture_override_for_bundle() {
+        let url = "https://example.com/download/application|arm64"
+            .parse::<Url>()
+            .unwrap();
+
+        assert_eq!(
+            Download::architecture_for(&url, "application.msixbundle"),
+            Some(Architecture::Arm64)
+        );
+    }
+
+    #[test]
+    fn infers_architecture_for_non_bundle() {
+        let url = "https://example.com/download/application-arm64"
+            .parse::<Url>()
+            .unwrap();
+
+        assert_eq!(
+            Download::architecture_for(&url, "application.exe"),
+            Some(Architecture::Arm64)
+        );
     }
 }

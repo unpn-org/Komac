@@ -192,7 +192,7 @@ fn analyze_download(
     font_version: bool,
     installer_type: Option<InstallerType>,
 ) -> Result<ArtifactAnalysis> {
-    let architecture = file.download.url().override_architecture().or_else(|| Architecture::from_url(file.download.url().as_str()));
+    let architecture = file.architecture();
     let file_name = file.download.file_name().to_owned();
     let mut analyzer = Analyzer::with_installer_type(
         &mut file.file,
