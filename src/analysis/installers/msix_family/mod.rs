@@ -12,9 +12,8 @@ use quick_xml::{Reader, XmlVersion, events::Event};
 use winget_types::{
     Sha256String,
     installer::{
-        AppsAndFeaturesEntry, Architecture, Capability, FileExtension, InstallationMetadata,
-        Installer, InstallerType, MinimumOSVersion, PackageFamilyName, Platform,
-        RestrictedCapability, UpgradeBehavior,
+        Architecture, Capability, FileExtension, InstallationMetadata, Installer, InstallerType,
+        MinimumOSVersion, PackageFamilyName, Platform, RestrictedCapability, UpgradeBehavior,
     },
     utils::ValidFileExtensions,
 };
@@ -224,12 +223,6 @@ impl Installers for Msix {
             )),
             capabilities: self.manifest.capabilities.unrestricted.clone(),
             restricted_capabilities: self.manifest.capabilities.restricted.clone(),
-            apps_and_features_entries: AppsAndFeaturesEntry::builder()
-                .display_name(&self.manifest.properties.display_name)
-                .publisher(&self.manifest.properties.publisher_display_name)
-                .display_version(&self.manifest.identity.version)
-                .build()
-                .into(),
             installation_metadata: InstallationMetadata::new_install_location(
                 get_install_location(
                     &self.manifest.identity.name,
