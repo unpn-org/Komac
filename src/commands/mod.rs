@@ -13,6 +13,8 @@ pub mod token;
 pub mod update_version;
 pub mod utils;
 
+use std::{future::Future, pin::Pin};
+
 use analyze::Analyze;
 use clap::Subcommand;
 use cleanup::Cleanup;
@@ -46,24 +48,24 @@ pub enum Commands {
 }
 
 impl Commands {
-    pub async fn run(self) -> color_eyre::Result<()> {
+    pub fn run(self) -> Pin<Box<dyn Future<Output = color_eyre::Result<()>>>> {
         match self {
-            Self::New(new_version) => new_version.run().await,
-            Self::NewLocale(new_locale) => new_locale.run().await,
-            Self::Update(update_version) => update_version.run().await,
-            Self::Cleanup(cleanup) => cleanup.run().await,
-            Self::Remove(remove_version) => remove_version.run().await,
+            Self::New(new_version) => Box::pin(new_version.run()),
+            Self::NewLocale(new_locale) => Box::pin(new_locale.run()),
+            Self::Update(update_version) => Box::pin(update_version.run()),
+            Self::Cleanup(cleanup) => Box::pin(cleanup.run()),
+            Self::Remove(remove_version) => Box::pin(remove_version.run()),
             Self::Token(token_args) => match token_args.command {
-                TokenCommands::Remove(remove_token) => remove_token.run(),
-                TokenCommands::Update(update_token) => update_token.run().await,
+                TokenCommands::Remove(remove_token) => Box::pin(async move { remove_token.run() }),
+                TokenCommands::Update(update_token) => Box::pin(update_token.run()),
             },
-            Self::List(list_versions) => list_versions.run().await,
-            Self::Show(show_version) => show_version.run().await,
-            Self::Sync(sync_fork) => sync_fork.run().await,
-            Self::Complete(complete) => complete.run(),
-            Self::Analyze(analyse) => analyse.run(),
-            Self::RemoveDeadVersions(remove_dead_versions) => remove_dead_versions.run().await,
-            Self::Submit(submit) => submit.run().await,
+            Self::List(list_versions) => Box::pin(list_versions.run()),
+            Self::Show(show_version) => Box::pin(show_version.run()),
+            Self::Sync(sync_fork) => Box::pin(sync_fork.run()),
+            Self::Complete(complete) => Box::pin(async move { complete.run() }),
+            Self::Analyze(analyse) => Box::pin(async move { analyse.run() }),
+            Self::RemoveDeadVersions(remove_dead_versions) => Box::pin(remove_dead_versions.run()),
+            Self::Submit(submit) => Box::pin(submit.run()),
         }
     }
 }
