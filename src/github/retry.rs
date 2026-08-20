@@ -1,4 +1,4 @@
-use std::{error::Error as _, time::Duration};
+use std::{any::Any, error::Error as _, future::Future, pin::Pin, time::Duration};
 
 use cynic::{GraphQlError, GraphQlResponse, Operation, http::CynicReqwestError};
 use reqwest::{
@@ -17,6 +17,13 @@ use super::{GitHubError, client::GitHub, graphql::GRAPHQL_URL};
 const MAX_GITHUB_REQUEST_RETRIES: u32 = 3;
 const MIN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
+type ErasedGraphQlResponse = Box<dyn Any + Send>;
+type DeserializeGraphQlResponseFuture = Pin<
+    Box<dyn Future<Output = Result<(ErasedGraphQlResponse, bool), GitHubError>> + Send + 'static>,
+>;
+type DeserializeGraphQlResponse =
+    fn(reqwest_middleware::Result<Response>) -> DeserializeGraphQlResponseFuture;
 
 pub(crate) fn client(client: Client) -> ClientWithMiddleware {
     let retry_policy = ExponentialBackoff::builder()
@@ -58,30 +65,55 @@ impl GitHub {
         operation: &Operation<ResponseData, Vars>,
     ) -> Result<GraphQlResponse<ResponseData>, GitHubError>
     where
-        ResponseData: DeserializeOwned + 'static,
+        ResponseData: DeserializeOwned + Send + 'static,
         Vars: Serialize,
     {
-        for retry in 0..=MAX_GITHUB_REQUEST_RETRIES {
-            let response =
-                deserialize_graphql_response(self.0.post(GRAPHQL_URL).json(operation).send().await)
-                    .await?;
+        let request = self
+            .0
+            .post(GRAPHQL_URL)
+            .json(operation)
+            .build()
+            .map_err(reqwest_middleware::Error::from)?;
+        let response = run_graphql_request_with_retry(
+            &self.0,
+            &request,
+            erase_graphql_response::<ResponseData>,
+        )
+        .await?;
 
-            if retry == MAX_GITHUB_REQUEST_RETRIES || !is_retryable_graphql_response(&response) {
-                return Ok(response);
-            }
+        Ok(*response
+            .downcast::<GraphQlResponse<ResponseData>>()
+            .expect("GraphQL response type must match its deserializer"))
+    }
+}
 
-            let delay = graphql_retry_delay(retry);
-            tracing::info!(
-                retry = retry + 1,
-                max_retries = MAX_GITHUB_REQUEST_RETRIES,
-                delay_secs = delay.as_secs(),
-                "Retrying GitHub GraphQL request after transient error"
-            );
-            tokio::time::sleep(delay).await;
+#[inline(never)]
+async fn run_graphql_request_with_retry(
+    client: &ClientWithMiddleware,
+    request: &reqwest::Request,
+    deserialize: DeserializeGraphQlResponse,
+) -> Result<ErasedGraphQlResponse, GitHubError> {
+    for retry in 0..=MAX_GITHUB_REQUEST_RETRIES {
+        let request = request
+            .try_clone()
+            .expect("GraphQL requests always have a cloneable JSON body");
+        let (response, retryable) = deserialize(client.execute(request).await).await?;
+
+        if retry == MAX_GITHUB_REQUEST_RETRIES || !retryable {
+            return Ok(response);
         }
 
-        unreachable!("GraphQL retry loop must return before exceeding max retries");
+        let delay = graphql_retry_delay(retry);
+        tracing::info!(
+            retry = retry + 1,
+            max_retries = MAX_GITHUB_REQUEST_RETRIES,
+            delay_secs = delay.as_secs(),
+            "Retrying GitHub GraphQL request after transient error"
+        );
+        tokio::time::sleep(delay).await;
     }
+
+    unreachable!("GraphQL retry loop must return before exceeding max retries");
 }
 
 struct GitHubRetryableStrategy;
@@ -113,12 +145,25 @@ where
     } else {
         let text = response.text().await?;
 
-        if let Ok(response) = serde_json::from_str(&text) {
+        if let Ok(response) = serde_json::from_slice(text.as_bytes()) {
             Ok(response)
         } else {
             Err(CynicReqwestError::ErrorResponse(status, text).into())
         }
     }
+}
+
+fn erase_graphql_response<ResponseData>(
+    response: reqwest_middleware::Result<Response>,
+) -> DeserializeGraphQlResponseFuture
+where
+    ResponseData: DeserializeOwned + Send + 'static,
+{
+    Box::pin(async move {
+        let response = deserialize_graphql_response::<ResponseData>(response).await?;
+        let retryable = is_retryable_graphql_response(&response);
+        Ok((Box::new(response) as ErasedGraphQlResponse, retryable))
+    })
 }
 
 fn is_retryable_response(response: &Response) -> bool {
