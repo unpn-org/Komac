@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod cleanup;
 pub mod complete;
+pub mod format;
 pub mod list_versions;
 pub mod new_locale;
 pub mod new_version;
@@ -19,6 +20,7 @@ use analyze::Analyze;
 use clap::Subcommand;
 use cleanup::Cleanup;
 use complete::Complete;
+use format::Format;
 use list_versions::ListVersions;
 use new_locale::NewLocale;
 use new_version::NewVersion;
@@ -42,6 +44,7 @@ pub enum Commands {
     Show(ShowVersion),
     Sync(SyncFork),
     Complete(Complete),
+    Format(Format),
     Analyze(Analyze),
     RemoveDeadVersions(RemoveDeadVersions),
     Submit(Submit),
@@ -63,6 +66,7 @@ impl Commands {
             Self::Show(show_version) => Box::pin(show_version.run()),
             Self::Sync(sync_fork) => Box::pin(sync_fork.run()),
             Self::Complete(complete) => Box::pin(async move { complete.run() }),
+            Self::Format(format) => Box::pin(async move { format.run() }),
             Self::Analyze(analyse) => Box::pin(async move { analyse.run() }),
             Self::RemoveDeadVersions(remove_dead_versions) => Box::pin(remove_dead_versions.run()),
             Self::Submit(submit) => Box::pin(submit.run()),
