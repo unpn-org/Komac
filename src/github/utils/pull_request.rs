@@ -98,7 +98,7 @@ impl Change {
     }
 }
 
-fn convert_to_crlf(input: &str) -> Cow<'_, str> {
+pub(crate) fn convert_to_crlf(input: &str) -> Cow<'_, str> {
     const CR: char = '\r';
     const LF: char = '\n';
     const CRLF: &str = concatc!(CR, LF);
