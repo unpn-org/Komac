@@ -488,15 +488,12 @@ impl NewVersion {
         let mut changes =
             manifests.create(&identifier, &version, self.created_with.as_deref(), is_font);
 
-        if dry_run {
-            print_changes(changes.iter().map(Change::manifest));
-            return Ok(());
-        }
-
-        let submit_option = SubmitOption::prompt(&mut changes, &identifier, &version, self.submit)?;
-
         let package_path = PackagePath::new(&identifier, Some(&version), None, is_font);
-        if let Some(output) = self.output.map(|out| out.join(package_path.as_str())) {
+        if let Some(output) = self
+            .output
+            .as_ref()
+            .map(|out| out.join(package_path.as_str()))
+        {
             changes.write_to(output.as_path()).await?;
             println!(
                 "{} written all manifest files to {}",
@@ -504,6 +501,13 @@ impl NewVersion {
                 output.display()
             );
         }
+
+        if dry_run {
+            print_changes(changes.iter().map(Change::manifest));
+            return Ok(());
+        }
+
+        let submit_option = SubmitOption::prompt(&mut changes, &identifier, &version, self.submit)?;
 
         if submit_option.is_exit() {
             return Ok(());
