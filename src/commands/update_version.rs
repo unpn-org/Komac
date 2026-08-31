@@ -172,19 +172,6 @@ impl UpdateVersion {
             font,
         );
 
-        if self.dry_run {
-            print_changes(changes.iter().map(Change::manifest));
-            return Ok(());
-        }
-
-        let submit_option = SubmitOption::prompt(
-            &mut changes,
-            &self.identifier,
-            &self.version,
-            self.submit,
-            self.exit,
-        )?;
-
         let package_path = PackagePath::new(&self.identifier, Some(&self.version), None, font);
         if let Some(output) = self
             .output
@@ -198,6 +185,19 @@ impl UpdateVersion {
                 output.display()
             );
         }
+
+        if self.dry_run {
+            print_changes(changes.iter().map(Change::manifest));
+            return Ok(());
+        }
+
+        let submit_option = SubmitOption::prompt(
+            &mut changes,
+            &self.identifier,
+            &self.version,
+            self.submit,
+            self.exit,
+        )?;
 
         if submit_option.is_exit() {
             return Ok(());
