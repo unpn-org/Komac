@@ -14,9 +14,9 @@ use std::{
 };
 
 use anstream::eprintln;
-use chrono::Utc;
 use clap::crate_version;
 use color_eyre::eyre::Result;
+use jiff::Timestamp;
 use secrecy::SecretString;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -26,7 +26,8 @@ use self::{
     notice::UpdateNotice,
 };
 use crate::{
-    commands::{Commands, utils::environment::CI},
+    commands::Commands,
+    environment::CI,
     github::{KOMAC, KOMAC_OWNER, client::GitHub},
 };
 
@@ -82,7 +83,7 @@ async fn latest_release() -> Result<CachedRelease> {
 
     if let Some(cache) = &cache
         && let Some(release) = cache.load().await
-        && release.is_fresh(Utc::now())
+        && release.is_fresh(Timestamp::now())
     {
         return Ok(release);
     }
@@ -96,7 +97,7 @@ async fn latest_release() -> Result<CachedRelease> {
         .get_latest_release(KOMAC_OWNER, KOMAC)
         .await?;
 
-    let release = CachedRelease::new(release, Utc::now());
+    let release = CachedRelease::new(release, Timestamp::now());
 
     if let Some(cache) = &cache
         && let Err(error) = cache.store(&release).await
