@@ -1,7 +1,6 @@
 use std::num::NonZeroU32;
 
 use anstream::println;
-use chrono::Local;
 use clap::Parser;
 use color_eyre::eyre::{Result, bail};
 use futures_util::TryFutureExt;
@@ -9,6 +8,7 @@ use inquire::{
     Text,
     validator::{MaxLengthValidator, MinLengthValidator},
 };
+use jiff::tz::TimeZone;
 use owo_colors::OwoColorize;
 use secrecy::SecretString;
 use tokio::try_join;
@@ -104,13 +104,13 @@ impl RemoveVersion {
             .await?
             .filter(|pull_request| pull_request.is_open())
         {
-            let created_at = pull_request.created_at.with_timezone(&Local);
+            let created_at = pull_request.created_at.to_zoned(TimeZone::system());
             println!(
                 "There is already {} pull request for {} {} that was created on {} at {}",
                 pull_request.state,
                 self.package_identifier,
                 self.package_version,
-                created_at.date_naive(),
+                created_at.date(),
                 created_at.time()
             );
             println!("{}", pull_request.url.blue());
