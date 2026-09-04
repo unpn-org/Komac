@@ -8,6 +8,7 @@ use camino::Utf8PathBuf;
 use color_eyre::eyre::{Report, Result, WrapErr, eyre};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use indexmap::IndexMap;
+use jiff::civil::Date;
 use napi::Either;
 use tokio::task::spawn_blocking;
 use winget_types::{
@@ -37,7 +38,7 @@ use crate::{
 pub struct ArtifactAnalysis {
     pub url: DecodedUrl,
     pub sha256: Sha256String,
-    pub release_date: Option<chrono::NaiveDate>,
+    pub release_date: Option<Date>,
     pub file_version: Option<String>,
     pub product_version: Option<String>,
     pub font_version: Option<String>,
