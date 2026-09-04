@@ -14,12 +14,12 @@ use std::{
     cmp::{Ordering, max},
 };
 
-use chrono::DateTime;
 use compact_str::{ToCompactString, format_compact};
 use creation_disposition::CreationDisposition;
 pub use del_flags::DelFlags;
 pub use exec_flag::{ExecFlag, ExecFlags};
 use generic_access_rights::GenericAccessRights;
+use jiff::Timestamp;
 use message_box::MessageBoxFlags;
 use nt_time::FileTime;
 use push_pop::PushPop;
@@ -662,9 +662,11 @@ impl Entry {
                     debug!(r#"ExtractFile: "{name}""#);
                     None
                 } else {
-                    let date = DateTime::from(FileTime::new(datetime.get()));
-                    debug!(r#"ExtractFile: "{name}" {date}"#);
-                    Some(date)
+                    let date = Timestamp::try_from(FileTime::new(datetime.get())).ok();
+                    if let Some(date) = date {
+                        debug!(r#"ExtractFile: "{name}" {date}"#);
+                    }
+                    date
                 };
                 state.file_system.create_file(
                     &*name,

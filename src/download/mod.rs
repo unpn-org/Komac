@@ -5,10 +5,10 @@ mod pre_download;
 
 use std::fmt;
 
-use chrono::{DateTime, NaiveDate};
 pub use downloader::Downloader;
 pub use downloads::Downloads;
 pub use file::DownloadedFile;
+use jiff::{civil::Date, fmt::rfc2822};
 pub use pre_download::PreDownload;
 use reqwest::{Response, header::LAST_MODIFIED};
 use winget_types::{installer::Architecture, utils::ValidFileExtensions};
@@ -72,15 +72,15 @@ impl Download {
         })
     }
 
-    /// Returns the last modified response header as a [`NaiveDate`].
-    pub fn last_modified(&self) -> Option<NaiveDate> {
+    /// Returns the last modified response header as a [`Date`].
+    pub fn last_modified(&self) -> Option<Date> {
         self.response.as_ref().and_then(|response| {
             response
                 .headers()
                 .get(LAST_MODIFIED)
                 .and_then(|last_modified| last_modified.to_str().ok())
-                .and_then(|last_modified| DateTime::parse_from_rfc2822(last_modified).ok())
-                .map(|date_time| date_time.date_naive())
+                .and_then(|last_modified| rfc2822::parse(last_modified).ok())
+                .map(|date_time| date_time.date())
         })
     }
 

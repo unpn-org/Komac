@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use anstream::println;
-use chrono::Local;
 use inquire::error::InquireResult;
+use jiff::tz::TimeZone;
 use owo_colors::OwoColorize;
 use tokio::try_join;
 use winget_types::{PackageIdentifier, PackageVersion};
@@ -76,13 +76,13 @@ impl Package<'_, '_, Versioned> {
             return Ok(true);
         };
 
-        let created_at = pull_request.created_at.with_timezone(&Local);
+        let created_at = pull_request.created_at.to_zoned(TimeZone::system());
         println!(
             "There is already {state} pull request for {identifier} {version} that was created on {date} at {time}",
             state = pull_request.state,
             identifier = self.identifier,
             version = self.version,
-            date = created_at.date_naive(),
+            date = created_at.date(),
             time = created_at.time()
         );
         println!("{}", pull_request.url.blue());

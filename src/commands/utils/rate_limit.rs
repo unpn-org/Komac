@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use chrono::TimeDelta;
 use indicatif::ProgressBar;
 use tokio::{sync::Mutex, time::sleep};
 
@@ -17,9 +16,8 @@ pub struct RateLimit {
 const MAX_PULL_REQUESTS_PER_HOUR: u8 = 150;
 
 /// Minimum delay to not go above 150 pull requests per hour
-const HOURLY_RATE_LIMIT_DELAY: Duration = Duration::from_secs(
-    TimeDelta::hours(1).num_seconds().unsigned_abs() / MAX_PULL_REQUESTS_PER_HOUR as u64,
-);
+const HOURLY_RATE_LIMIT_DELAY: Duration =
+    Duration::from_secs(60 * 60 / MAX_PULL_REQUESTS_PER_HOUR as u64);
 
 /// GitHub has an undocumented limit of 20 pull requests per minute
 ///
@@ -27,9 +25,8 @@ const HOURLY_RATE_LIMIT_DELAY: Duration = Duration::from_secs(
 const MAX_PULL_REQUESTS_PER_MINUTE: u8 = 20;
 
 /// Minimum delay to not go above 20 pull requests per minute
-const PER_MINUTE_RATE_LIMIT_DELAY: Duration = Duration::from_secs(
-    TimeDelta::minutes(1).num_seconds().unsigned_abs() / MAX_PULL_REQUESTS_PER_MINUTE as u64,
-);
+const PER_MINUTE_RATE_LIMIT_DELAY: Duration =
+    Duration::from_secs(60 / MAX_PULL_REQUESTS_PER_MINUTE as u64);
 
 impl RateLimit {
     pub fn new(fast: bool) -> Self {
