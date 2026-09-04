@@ -1,13 +1,13 @@
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use compact_str::CompactString;
+use jiff::Timestamp;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FsEntry {
     File {
         name: CompactString,
-        modified_at: Option<DateTime<Utc>>,
+        modified_at: Option<Timestamp>,
         position: u64,
     },
     Link {
@@ -31,11 +31,11 @@ impl FsEntry {
     /// Creates a new file [`FsEntry`] from a name, an optional modified at [datetime], and a
     /// position.
     ///
-    /// [datetime]: DateTime<Utc>
+    /// [datetime]: Timestamp
     pub fn new_file<T, D, P>(name: T, modified_at: D, position: P) -> Self
     where
         T: Into<CompactString>,
-        D: Into<Option<DateTime<Utc>>>,
+        D: Into<Option<Timestamp>>,
         P: Into<u64>,
     {
         Self::File {
@@ -76,8 +76,8 @@ impl FsEntry {
 
     /// Returns the modified at [datetime] if this entry is a file, or None if it is a directory.
     ///
-    /// [datetime]: DateTime<Utc>
-    pub const fn modified_at(&self) -> Option<&DateTime<Utc>> {
+    /// [datetime]: Timestamp
+    pub const fn modified_at(&self) -> Option<&Timestamp> {
         match self {
             Self::File { modified_at, .. } => modified_at.as_ref(),
             Self::Link { .. } | Self::Directory(_) => None,
