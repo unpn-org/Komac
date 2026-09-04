@@ -7,11 +7,11 @@ use std::{
     slice::Iter,
 };
 
-use chrono::{DateTime, Utc};
 use compact_str::CompactString;
 pub use entry::FsEntry;
 use indextree::{Arena, Node, NodeId};
 use itertools::{Either, Itertools};
+use jiff::Timestamp;
 pub use relative_location::RelativeLocation;
 use typed_path::{Utf8Component, Utf8WindowsComponent, Utf8WindowsPath};
 
@@ -120,7 +120,7 @@ impl FileSystem {
     /// Creates a file from a path relative to a [`location`], an optional modified at
     /// [datetime], and a position.
     ///
-    /// [datetime]: DateTime<Utc>
+    /// [datetime]: Timestamp
     /// [location]: RelativeLocation
     pub fn create_file<T, D, P>(
         &mut self,
@@ -131,7 +131,7 @@ impl FileSystem {
     ) -> Option<NodeId>
     where
         T: AsRef<Utf8WindowsPath>,
-        D: Into<Option<DateTime<Utc>>>,
+        D: Into<Option<Timestamp>>,
         P: Into<u64>,
     {
         let path = path.as_ref();

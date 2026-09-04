@@ -50,7 +50,7 @@ fn parse_version(tag: &str) -> Option<Version> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use jiff::Timestamp;
     use rstest::rstest;
 
     use super::*;
@@ -68,7 +68,7 @@ mod tests {
         #[case] expected: bool,
     ) {
         let release = CachedRelease {
-            checked_at: Utc::now(),
+            checked_at: Timestamp::now(),
             tag_name: tag_name.to_owned(),
             url: String::new(),
         };

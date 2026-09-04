@@ -3,27 +3,27 @@
 
 use std::{io, path::PathBuf};
 
-use chrono::{DateTime, TimeDelta, Utc};
 use clap::crate_name;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::github::rest::latest_release::Release;
 
 /// How long a cached release stays valid before GitHub is queried again.
-const CHECK_INTERVAL: TimeDelta = TimeDelta::hours(24);
+const CHECK_INTERVAL: SignedDuration = SignedDuration::from_secs(24 * 3600);
 
 const FILE_NAME: &str = "update-check.json";
 
 /// The latest release as of [`checked_at`](Self::checked_at).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedRelease {
-    pub checked_at: DateTime<Utc>,
+    pub checked_at: Timestamp,
     pub tag_name: String,
     pub url: String,
 }
 
 impl CachedRelease {
-    pub fn new(release: Release, checked_at: DateTime<Utc>) -> Self {
+    pub fn new(release: Release, checked_at: Timestamp) -> Self {
         Self {
             checked_at,
             tag_name: release.tag_name,
@@ -33,8 +33,8 @@ impl CachedRelease {
 
     /// Returns true if this release was checked recently enough to be reused
     /// without querying GitHub.
-    pub fn is_fresh(&self, now: DateTime<Utc>) -> bool {
-        now.signed_duration_since(self.checked_at) < CHECK_INTERVAL
+    pub fn is_fresh(&self, now: Timestamp) -> bool {
+        now.duration_since(self.checked_at) < CHECK_INTERVAL
     }
 }
 
@@ -75,7 +75,7 @@ mod tests {
 
     use super::*;
 
-    fn cached_release(checked_at: DateTime<Utc>) -> CachedRelease {
+    fn cached_release(checked_at: Timestamp) -> CachedRelease {
         CachedRelease {
             checked_at,
             tag_name: "v2.18.0".to_owned(),
@@ -84,12 +84,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case::just_checked(TimeDelta::zero(), true)]
-    #[case::within_interval(TimeDelta::hours(23), true)]
-    #[case::at_interval(TimeDelta::hours(24), false)]
-    #[case::long_ago(TimeDelta::days(7), false)]
-    fn freshness(#[case] age: TimeDelta, #[case] expected: bool) {
-        let now = Utc::now();
+    #[case::just_checked(SignedDuration::ZERO, true)]
+    #[case::within_interval(SignedDuration::from_secs(23 * 3600), true)]
+    #[case::at_interval(SignedDuration::from_secs(24 * 3600), false)]
+    #[case::long_ago(SignedDuration::from_secs(7 * 24 * 3600), false)]
+    fn freshness(#[case] age: SignedDuration, #[case] expected: bool) {
+        let now = Timestamp::now();
 
         assert_eq!(cached_release(now - age).is_fresh(now), expected);
     }
@@ -100,7 +100,7 @@ mod tests {
         let cache = ReleaseCache {
             path: directory.path().join(crate_name!()).join(FILE_NAME),
         };
-        let release = cached_release(Utc::now());
+        let release = cached_release(Timestamp::now());
 
         assert_eq!(cache.load().await, None);
 
