@@ -170,7 +170,7 @@ impl Komac {
                         GitHubPullRequestState::Merged => "merged",
                     })
                     .to_owned(),
-                    created_at: pull_request.created_at.to_rfc3339(),
+                    created_at: pull_request.created_at.to_string(),
                 })
             })
             .map_err(Into::into)

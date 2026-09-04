@@ -266,12 +266,13 @@ async fn confirm_removal(
         .await?
         && pull_request.is_open()
     {
+        let created_at = pull_request.created_at.to_zoned(jiff::tz::TimeZone::UTC);
         println!(
             "{identifier} {version} returned {} in all its InstallerUrls but there is already {} pull request for this version that was created on {} at {}.",
             StatusCode::NOT_FOUND.red(),
             pull_request.state,
-            pull_request.created_at.date_naive(),
-            pull_request.created_at.time()
+            created_at.date(),
+            created_at.time()
         );
         return if auto {
             Ok(false)

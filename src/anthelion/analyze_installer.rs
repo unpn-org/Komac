@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use color_eyre::eyre::{Report, eyre};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use indexmap::IndexMap;
+use jiff::civil::Date;
 use napi::Either;
 use winget_types::{
     Sha256String,
@@ -28,7 +29,7 @@ use crate::{
 pub struct ArtifactAnalysis {
     pub url: DecodedUrl,
     pub sha256: Sha256String,
-    pub release_date: Option<chrono::NaiveDate>,
+    pub release_date: Option<Date>,
     pub file_version: Option<String>,
     pub product_version: Option<String>,
     pub font_version: Option<String>,
