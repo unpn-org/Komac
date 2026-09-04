@@ -1,6 +1,6 @@
 mod state;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 pub use state::PullRequestState;
 use url::Url;
 
@@ -11,7 +11,7 @@ pub struct PullRequest {
     pub title: String,
     pub url: Url,
     pub state: PullRequestState,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     #[allow(dead_code)]
     pub viewer_did_author: bool,
     #[allow(dead_code)]
