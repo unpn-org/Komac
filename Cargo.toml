@@ -45,8 +45,8 @@ bytes = "1.12.1"
 cab = "0.6.0"
 camino = { version = "1.2.5", features = ["serde1"] }
 jiff = { version = "0.2.35", features = ["serde"] }
-clap = { version = "4.6.6", features = ["derive", "cargo", "env"] }
-clap_complete = "4.6.9"
+clap = { version = "4.6.6", features = ["derive", "cargo", "env"], optional = true }
+clap_complete = { version = "4.6.9", optional = true }
 codepage = "0.1.2"
 color-eyre = { version = "0.6.5", default-features = false }
 compact_str = "0.10.0"
@@ -61,23 +61,23 @@ indexmap = "2.14.1"
 indextree = "4.9.1"
 indicatif = "0.18.6"
 inno = "0.6.0"
-inquire = "0.9.4"
+inquire = { version = "0.9.4", optional = true }
 itertools = "0.15.0"
 itoa = "1.0.18"
 keyring-core = { version = "1.0.0", optional = true }
-lzma-rust2 = { version = "0.20.1", features = ["std"] }
+lzma-rust2 = { version = "0.20.1", default-features = false, features = ["std", "optimization"] }
 memchr = "2.8.3"
 msi = "0.10.0"
 nt-time = { version = "0.15.0", features = ["jiff"] }
 num_cpus = "1.17.0"
-open = "5.4.3"
-ordinal = "0.4.1"
+open = { version = "5.4.3", optional = true }
+ordinal = { version = "0.4.1", optional = true }
 owo-colors = "4.4.0"
 percent-encoding = "2.3.2"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 rand = "0.10.2"
-ratatui = "0.30.2"
-ratatui-textarea = { version = "0.9.2", features = ["search"] }
+ratatui = { version = "0.30.2", optional = true }
+ratatui-textarea = { version = "0.9.2", features = ["search"], optional = true }
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["charset", "http2", "stream", "system-proxy"] }
 reqwest-middleware = { version = "0.5.2", default-features = false, features = ["json"] }
@@ -87,7 +87,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] } # Anthelion
 serde_with = "3.22.0"
 serde-saphyr = "1.2.0" # Anthelion
-sevenz-rust2 = "0.22.2"
+sevenz-rust2 = { version = "0.22.2", default-features = false, features = ["aes256", "bzip2", "ppmd"] }
 sha2 = "0.11.0"
 strsim = "0.11.1"
 strum = { version = "0.28.0", features = ["derive"] }
@@ -96,21 +96,21 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "parking_lot"] }
 tracing = { version = "0.1.44", features = ["release_max_level_trace"] }
-tracing-indicatif = "0.3.14"
-tracing-subscriber = "0.3.23"
-tree-sitter-highlight = "0.26.13"
-tree-sitter-yaml = "0.7.2"
+tracing-indicatif = { version = "0.3.14", optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true }
+tree-sitter-highlight = { version = "0.26.13", optional = true }
+tree-sitter-yaml = { version = "0.7.2", optional = true }
 typed-path = "0.12.3"
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.26.0", features = ["serde", "v4"] }
 walkdir = "2.5.0"
 winget-types = { version = "0.5.0", features = ["serde", "std", "jiff", "serde-saphyr"] } # Anthelion
 zerocopy = { version = "0.8.56", features = ["derive", "std"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate", "deflate64"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
 # Anthelion Start
-napi = { version = "3.12.1", features = ["async", "tokio_rt"] }
+napi = { version = "3.12.1", features = ["async"] }
 napi-derive = "3.6.3"
-pulldown-cmark = "0.13.4"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 # Anthelion End
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))'.dependencies]
@@ -129,8 +129,19 @@ openssl-vendored = { package = "openssl", version = "0.10.80", features = ["vend
 default = ["cli", "openssl"]
 cli = [
     "dep:apple-native-keyring-store",
+    "dep:clap",
+    "dep:clap_complete",
     "dep:dbus-secret-service-keyring-store",
+    "dep:inquire",
     "dep:keyring-core",
+    "dep:open",
+    "dep:ordinal",
+    "dep:ratatui",
+    "dep:ratatui-textarea",
+    "dep:tracing-indicatif",
+    "dep:tracing-subscriber",
+    "dep:tree-sitter-highlight",
+    "dep:tree-sitter-yaml",
     "dep:windows-native-keyring-store",
 ]
 node = ["dep:openssl-vendored", "reqwest/native-tls"]
