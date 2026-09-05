@@ -1,12 +1,16 @@
+use std::fmt::{self, Display};
+#[cfg(feature = "cli")]
 use std::{
-    fmt::{self, Display},
     io::{StdoutLock, Write as IoWrite},
     sync::LazyLock,
 };
 
+#[cfg(feature = "cli")]
 use anstream::AutoStream;
+#[cfg(feature = "cli")]
 use owo_colors::{OwoColorize, Style, colors::css::SlateGrey};
 use serde::Serialize;
+#[cfg(feature = "cli")]
 use tree_sitter_highlight::{Highlight, HighlightConfiguration, HighlightEvent, Highlighter};
 pub use url::Url;
 use winget_types::{
@@ -127,6 +131,7 @@ impl Display for Manifests {
     }
 }
 
+#[cfg(feature = "cli")]
 pub fn print_changes<I, S>(contents: I)
 where
     I: IntoIterator<Item = S>,
@@ -140,6 +145,7 @@ where
     }
 }
 
+#[cfg(feature = "cli")]
 pub fn print_manifest(lock: &mut AutoStream<StdoutLock<'static>>, manifest: &str) {
     const COMMENT: &str = "comment";
     const PROPERTY: &str = "property";
