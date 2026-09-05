@@ -1,6 +1,5 @@
 use std::{borrow::Cow, fmt::Write, io, path::Path, slice, vec};
 
-use clap::{crate_name, crate_version};
 use const_format::concatc;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use serde::Serialize;
@@ -63,7 +62,12 @@ impl Change {
         M: Manifest + Serialize,
     {
         let mut result = String::from("# Created by Anthelion using ");
-        let _ = writeln!(result, "{} v{}", crate_name!(), crate_version!());
+        let _ = writeln!(
+            result,
+            "{} v{}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
         let _ = writeln!(result, "# yaml-language-server: $schema={}", M::SCHEMA);
         let _ = writeln!(result);
         let yaml = crate::manifests::to_yaml_string(manifest)
