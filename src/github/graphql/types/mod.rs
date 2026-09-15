@@ -14,6 +14,10 @@ use super::github_schema as schema;
 pub struct GitObjectId(String);
 
 impl GitObjectId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn new<S: Into<String>>(git_object_id: S) -> Self {
         Self(git_object_id.into())
     }
