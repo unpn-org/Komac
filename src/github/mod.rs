@@ -2,8 +2,12 @@ pub mod client;
 mod error;
 pub mod graphql;
 #[cfg(feature = "cli")]
+pub mod move_package;
+#[cfg(feature = "cli")]
 mod package;
 mod repository;
+#[cfg(feature = "cli")]
+pub(crate) mod rate_limit;
 pub(crate) mod rest;
 pub(crate) mod retry;
 pub mod utils;
