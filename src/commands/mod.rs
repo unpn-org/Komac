@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod complete;
 pub mod format;
 pub mod list_versions;
+pub mod move_package;
 pub mod new_locale;
 pub mod new_version;
 pub mod remove_dead_versions;
@@ -22,6 +23,7 @@ use cleanup::Cleanup;
 use complete::Complete;
 use format::Format;
 use list_versions::ListVersions;
+use move_package::MovePackage;
 use new_locale::NewLocale;
 use new_version::NewVersion;
 use remove_dead_versions::RemoveDeadVersions;
@@ -38,6 +40,8 @@ pub enum Commands {
     NewLocale(Box<NewLocale>),  // Comparatively large so boxed to store on the heap
     Update(Box<UpdateVersion>), // Comparatively large so boxed to store on the heap
     Remove(RemoveVersion),
+    #[command(hide = true)]
+    Move(MovePackage),
     Cleanup(Cleanup),
     Token(TokenArgs),
     List(ListVersions),
@@ -58,6 +62,7 @@ impl Commands {
             Self::Update(update_version) => Box::pin(update_version.run()),
             Self::Cleanup(cleanup) => Box::pin(cleanup.run()),
             Self::Remove(remove_version) => Box::pin(remove_version.run()),
+            Self::Move(move_package) => Box::pin(move_package.run()),
             Self::Token(token_args) => match token_args.command {
                 TokenCommands::Remove(remove_token) => Box::pin(async move { remove_token.run() }),
                 TokenCommands::Update(update_token) => Box::pin(update_token.run()),
