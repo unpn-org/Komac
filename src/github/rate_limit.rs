@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use indicatif::ProgressBar;
 use tokio::{sync::Mutex, time::sleep};
 
-use super::SPINNER_SLOW_TICK_RATE;
+pub const SPINNER_SLOW_TICK_RATE: Duration = Duration::from_millis(100);
 
 pub struct RateLimit {
     last_pr_time: Mutex<Instant>,
