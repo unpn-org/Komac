@@ -16,6 +16,7 @@ use crate::analysis::installers::nsis::{
     language::table::LanguageTable,
     registry::Registry,
     strings::{code::NsCode, shell::Shell, var::NsVar},
+    variables::{MAX_STRING_LENGTH, NsisStringExt, bound_string},
     version::NsisVersion,
 };
 
@@ -162,7 +163,7 @@ impl<'data> NsisState<'data> {
         // If the string doesn't have any special characters, we can just decode it normally
         if !contains_code {
             let encoding = if unicode { UTF_16LE } else { WINDOWS_1252 };
-            return encoding.decode_without_bom_handling(string_bytes).0;
+            return bound_string(encoding.decode_without_bom_handling(string_bytes).0);
         }
 
         // Create an iterator of characters represented as an unsigned 16-bit integer
@@ -173,6 +174,9 @@ impl<'data> NsisState<'data> {
         let mut buf = String::new();
 
         while let Some(mut current) = characters.next() {
+            if buf.len() >= MAX_STRING_LENGTH {
+                break;
+            }
             if let Some(code) = NsCode::try_new_with_version(current, self.version) {
                 let Some(next) = characters.next() else {
                     break;
@@ -195,19 +199,21 @@ impl<'data> NsisState<'data> {
                         } else if code.is_lang()
                             && let Some(offset) = self.language_table.string_offset(index)
                         {
-                            buf.push_str(&self.get_string(offset));
+                            buf.push_bounded(&self.get_string(offset));
                         }
                     }
                     continue;
                 }
                 current = next;
             }
-            if let Some(character) = char::from_u32(u32::from(current)) {
+            if let Some(character) = char::from_u32(u32::from(current))
+                && buf.len() + character.len_utf8() <= MAX_STRING_LENGTH
+            {
                 buf.push(character);
             }
         }
 
-        Cow::Owned(buf)
+        bound_string(Cow::Owned(buf))
     }
 
     pub fn get_int(&self, relative_offset: i32) -> i32 {
