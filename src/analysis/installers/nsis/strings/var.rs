@@ -1,5 +1,5 @@
 use super::{NsisString, PredefinedVar};
-use crate::analysis::installers::nsis::{variables::Variables, version::NsisVersion};
+use crate::analysis::installers::nsis::{variables::{Variables, NsisStringExt}, version::NsisVersion};
 
 pub struct NsVar;
 
@@ -18,14 +18,14 @@ impl NsVar {
             match PredefinedVar::try_from(offset) {
                 Ok(PredefinedVar::InstDir) => {
                     if let Some(dir) = variables.get(&index) {
-                        buf.push_nsis_str(dir);
+                        buf.push_bounded_nsis(dir);
                     }
                 }
-                Ok(var) => buf.push_str(var.as_str()),
+                Ok(var) => buf.push_bounded(var.as_str()),
                 Err(_) => {}
             }
         } else if let Some(var) = variables.get(&index) {
-            buf.push_nsis_str(var);
+            buf.push_bounded_nsis(var);
         }
     }
 }
