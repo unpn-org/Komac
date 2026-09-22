@@ -13,6 +13,7 @@ use crate::analysis::installers::nsis::{
     language::table::LanguageTable,
     registry::Registry,
     strings::{NsisChar, NsisCow, NsisStr, NsisString, code::NsCode, shell::Shell, var::NsVar},
+    variables::{MAX_STRING_LENGTH, NsisStringExt, bound_string},
     version::NsisVersion,
 };
 
@@ -183,7 +184,7 @@ impl<'data> NsisState<'data> {
 
         // If the string doesn't have any special characters, we can just decode it normally
         if !contains_code {
-            return NsisCow::Borrowed(NsisStr::from_bytes(string_bytes, unicode));
+            return bound_string(NsisCow::Borrowed(NsisStr::from_bytes(string_bytes, unicode)));
         }
 
         // Create an iterator of characters represented as an unsigned 16-bit integer
@@ -194,6 +195,9 @@ impl<'data> NsisState<'data> {
         let mut buf = NsisString::new(unicode);
 
         while let Some(mut current) = characters.next() {
+            if buf.len() >= MAX_STRING_LENGTH {
+                break;
+            }
             if let Some(code) = NsCode::try_new_with_version(current, self.version) {
                 let Some(next) = characters.next() else {
                     break;
@@ -216,7 +220,7 @@ impl<'data> NsisState<'data> {
                         } else if code.is_lang()
                             && let Some(offset) = self.language_table.string_offset(index)
                         {
-                            buf.push_nsis_str(self.get_string(offset).as_nsis_str());
+                            buf.push_bounded_nsis(self.get_string(offset).as_nsis_str());
                         }
                     }
                     continue;
@@ -230,7 +234,7 @@ impl<'data> NsisState<'data> {
             });
         }
 
-        NsisCow::Owned(buf)
+        bound_string(NsisCow::Owned(buf))
     }
 
     /// Resolves the string at `relative_offset` and parses it as a decimal integer, or as
