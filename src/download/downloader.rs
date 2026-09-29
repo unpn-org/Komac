@@ -33,6 +33,8 @@ impl Downloader {
 
     const APPLICATION: &'static str = "application";
 
+    const FONT: &'static str = "font/";
+
     const OCTET_STREAM: &'static str = "octet-stream";
 
     /// Creates a new Downloader with a maximum number of concurrent downloads of the number of
@@ -146,6 +148,7 @@ impl Downloader {
                 && !content_type
                     .as_bytes()
                     .starts_with(Self::APPLICATION.as_bytes())
+                && !content_type.as_bytes().starts_with(Self::FONT.as_bytes())
         }) {
             return Err(ContentTypeError::new(download.clone(), content_types));
         }
@@ -282,8 +285,9 @@ impl fmt::Display for ContentTypeError {
         }
         write!(
             f,
-            " but an {application} or {octet_stream} content type was expected",
+            " but an {application}, {font}, or {octet_stream} content type was expected",
             application = Downloader::APPLICATION,
+            font = Downloader::FONT,
             octet_stream = Downloader::OCTET_STREAM
         )
     }
