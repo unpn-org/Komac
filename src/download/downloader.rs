@@ -37,6 +37,8 @@ impl Downloader {
 
     const APPLICATION: &'static str = "application";
 
+    const FONT: &'static str = "font/";
+
     const OCTET_STREAM: &'static str = "octet-stream";
 
     /// Creates a new Downloader with a maximum number of concurrent downloads of the number of
@@ -147,6 +149,7 @@ impl Downloader {
                     && !content_type
                         .as_bytes()
                         .starts_with(Self::APPLICATION.as_bytes())
+                    && !content_type.as_bytes().starts_with(Self::FONT.as_bytes())
             })
         {
             return Err(ContentTypeError::new(download.clone(), content_types));
@@ -308,8 +311,9 @@ impl fmt::Display for ContentTypeError {
         }
         write!(
             f,
-            " but an {application} or {octet_stream} content type was expected",
+            " but an {application}, {font}, or {octet_stream} content type was expected",
             application = Downloader::APPLICATION,
+            font = Downloader::FONT,
             octet_stream = Downloader::OCTET_STREAM
         )
     }
@@ -326,6 +330,8 @@ mod tests {
     #[case::missing(&[], true)]
     #[case::application(&["application/octet-stream"], true)]
     #[case::binary_octet_stream(&["binary/octet-stream"], true)]
+    #[case::font(&["font/woff2"], true)]
+    #[case::font_with_other_type(&["text/html", "font/ttf"], true)]
     #[case::non_application(&["text/html"], false)]
     #[case::one_valid(&["text/html", "application/octet-stream"], true)]
     fn checks_content_types(#[case] content_types: &[&str], #[case] expected: bool) {
