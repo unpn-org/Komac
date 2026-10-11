@@ -1,0 +1,22 @@
+[package]
+name = "flate2"
+# Local backend adapter; the published implementation is versioned below.
+version = "1.999.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "GPL-3.0-or-later"
+description = "Komac backend feature adapter for upstream flate2"
+
+[dependencies]
+# This registry uses the official crates.io index with a distinct source
+# identity, preventing the adapter patch from applying recursively.
+flate2-upstream = { package = "flate2", version = "1.1.11", registry = "flate2-upstream", default-features = false, features = ["zlib-rs"] }
+
+[features]
+default = ["zlib-rs", "runtime_detection"]
+runtime_detection = ["flate2-upstream/runtime_detection"]
+zlib-rs = ["flate2-upstream/zlib-rs"]
+
+# cab requests rust_backend; route its decompression through zlib-rs too.
+rust_backend = ["zlib-rs"]
