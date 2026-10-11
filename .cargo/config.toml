@@ -23,3 +23,8 @@ rustflags = [
 
 [build]
 rustflags = ["-Z", "threads=0"]
+
+# Use the official crates.io index under a distinct registry identity so the
+# backend adapter can depend on published flate2 without patching itself.
+[registries.flate2-upstream]
+index = "sparse+https://index.crates.io/"
