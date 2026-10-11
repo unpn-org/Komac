@@ -59,10 +59,27 @@ impl InstallerManifestExt for InstallerManifest {
                         architecture == Some(installer.architecture),
                     )
                 };
-                rank(left).cmp(&rank(right)).then_with(|| {
-                    strsim::jaro_winkler(left.url.as_str(), url.as_str())
-                        .total_cmp(&strsim::jaro_winkler(right.url.as_str(), url.as_str()))
-                })
+                rank(left)
+                    .cmp(&rank(right))
+                    .then_with(|| {
+                        strsim::jaro_winkler(left.url.as_str(), url.as_str())
+                            .total_cmp(&strsim::jaro_winkler(right.url.as_str(), url.as_str()))
+                    })
+                    .then_with(|| {
+                        // A package can also be installed by extracting its ZIP payload.
+                        // Analyze the native package once; merging retains the ZIP view.
+                        let native_package = |installer: &Installer| {
+                            matches!(
+                                installer.r#type.or(self.r#type),
+                                Some(InstallerType::Appx | InstallerType::Msix)
+                            )
+                        };
+                        if left.url == right.url {
+                            native_package(left).cmp(&native_package(right))
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
             })
             .cloned()
             .map(|installer| inherit_installer_properties(installer, self))
@@ -138,6 +155,25 @@ fn merge_installer(
     new_installer: Installer,
     duplicate_url: bool,
 ) -> Installer {
+    let new_installer = if previous_installer.r#type == Some(InstallerType::Zip)
+        && matches!(
+            new_installer.r#type,
+            Some(InstallerType::Appx | InstallerType::Msix)
+        ) {
+        // The same APPX/MSIX bytes can back both a native package and a ZIP entry.
+        // Refresh the artifact fields without importing package registration metadata
+        // or replacing the archive's declared nested installer and portable settings.
+        Installer {
+            architecture: new_installer.architecture,
+            r#type: Some(InstallerType::Zip),
+            url: new_installer.url,
+            sha_256: new_installer.sha_256,
+            release_date: new_installer.release_date,
+            ..Installer::default()
+        }
+    } else {
+        new_installer
+    };
     let installer_type = match (previous_installer.r#type, new_installer.r#type) {
         (Some(InstallerType::Portable), _) | (_, Some(InstallerType::Portable)) => {
             previous_installer.r#type
