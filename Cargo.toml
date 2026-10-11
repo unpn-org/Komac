@@ -53,7 +53,8 @@ compact_str = "0.10.0"
 const_format = { version = "0.2.36", features = ["derive"] }
 cynic = { version = "3.14.0", features = ["http-reqwest"] }
 encoding_rs = "0.8.42"
-flate2 = "1.1.10"
+# Pin the backend adapter; its unmodified upstream implementation still updates.
+flate2 = { version = "=1.999.0", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 futures-util = "0.3.34"
 html2text = "0.17.3"
 indexmap = "2.14.2"
@@ -158,6 +159,7 @@ name = "anthelion_komac"
 crate-type = ["cdylib"]
 
 [patch.crates-io]
+flate2 = { path = "crates/flate2" }
 winget-types = { git = "https://github.com/UnownPlain/winget-types.git", branch = "anthelion" }
 serde-saphyr = { git = "https://github.com/UnownPlain/serde-saphyr.git", branch = "anthelion" }
 # Anthelion End
