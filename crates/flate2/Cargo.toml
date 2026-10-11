@@ -1,0 +1,35 @@
+[package]
+name = "flate2"
+# Adapter compatibility marker; the published implementation is versioned below.
+version = "1.999.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "GPL-3.0-or-later"
+description = "Komac backend feature adapter for upstream flate2"
+
+[dependencies]
+# This registry uses the official crates.io index with a distinct source
+# identity, preventing the adapter patch from applying recursively.
+flate2-upstream = { package = "flate2", version = "1.1.10", registry = "flate2-upstream", default-features = false, features = ["zlib-rs"] }
+
+[features]
+default = ["zlib-rs", "runtime_detection"]
+runtime_detection = ["flate2-upstream/runtime_detection"]
+zlib-rs = ["flate2-upstream/zlib-rs"]
+
+# Transitive dependencies hardcode these backend features. Accept their
+# requests while keeping the upstream implementation on zlib-rs exclusively.
+rust_backend = ["zlib-rs"]
+miniz_oxide = ["zlib-rs"]
+miniz-sys = ["zlib-rs"]
+zlib = ["zlib-rs"]
+zlib-default = ["zlib-rs"]
+zlib-ng = ["zlib-rs"]
+zlib-ng-compat = ["zlib-rs"]
+cloudflare_zlib = ["zlib-rs"]
+
+any_impl = ["zlib-rs"]
+any_zlib = ["zlib-rs"]
+any_c_zlib = ["zlib-rs"]
+document-features = ["flate2-upstream/document-features"]
