@@ -15,6 +15,7 @@ pub struct VSString<'a> {
 impl<'a> VSString<'a> {
     pub fn read_from(data: &'a [u8]) -> io::Result<Self> {
         let header = VSHeader::read_from(data)?;
+        let data = &data[..usize::from(header.length())];
 
         let data = &data[header.end_offset..];
 
