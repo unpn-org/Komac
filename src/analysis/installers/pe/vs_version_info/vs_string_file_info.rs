@@ -15,6 +15,7 @@ pub struct VSStringFileInfo<'a> {
 impl<'a> VSStringFileInfo<'a> {
     pub fn read_from(data: &'a [u8]) -> io::Result<Self> {
         let header = VSHeader::read_from(data)?;
+        let data = &data[..usize::from(header.length())];
 
         let mut children = Vec::new();
 
@@ -28,7 +29,9 @@ impl<'a> VSStringFileInfo<'a> {
             children.push(child);
         }
 
-        debug_assert!(!children.is_empty());
+        if children.is_empty() {
+            return Err(io::Error::other("StringFileInfo has no string tables"));
+        }
 
         Ok(Self { header, children })
     }

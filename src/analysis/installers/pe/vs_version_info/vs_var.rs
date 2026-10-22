@@ -13,6 +13,7 @@ pub struct VSVar<'a> {
 impl<'a> VSVar<'a> {
     pub fn read_from(data: &'a [u8]) -> io::Result<Self> {
         let header = VSHeader::read_from(data)?;
+        let data = &data[..usize::from(header.length())];
 
         let children =
             <[VarDword]>::ref_from_bytes(&data[header.end_offset..usize::from(header.length())])
