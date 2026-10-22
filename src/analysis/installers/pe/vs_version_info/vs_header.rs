@@ -28,22 +28,34 @@ impl<'a> VSHeader<'a> {
         data: &'a [u8],
         key_length: Option<usize>,
     ) -> io::Result<Self> {
-        let mut data = data;
-
-        let length = data.read_u16::<LE>()?;
+        let mut reader = data;
+        let length = reader.read_u16::<LE>()?;
+        // Every offset, key and child must stay within its containing block.
+        let mut data = data
+            .get(size_of::<u16>()..usize::from(length))
+            .ok_or_else(|| io::Error::other("Invalid version resource block length"))?;
         let value_length = data.read_u16::<LE>()?;
         let r#type = VSType::try_read_from(&mut data)?;
 
         // Use the provided key length or search for a 16-bit null word
-        let key_length = key_length.unwrap_or_else(|| {
+        let key_length = if let Some(key_length) = key_length {
+            key_length
+        } else {
             let (chunks, _remainder) = data.as_chunks();
             chunks
                 .iter()
                 .position(|chunk| chunk == b"\0\0")
-                .map_or(data.len(), |index| index * size_of::<u16>())
-        });
+                .map(|index| index * size_of::<u16>())
+                .ok_or_else(|| io::Error::other("Unterminated version resource key"))?
+        };
 
-        let key = UTF_16LE.decode_with_bom_removal(&data[..key_length]).0;
+        let key_bytes = data
+            .get(..key_length)
+            .ok_or_else(|| io::Error::other("Truncated version resource key"))?;
+        if data.get(key_length..key_length + size_of::<u16>()) != Some(b"\0\0") {
+            return Err(io::Error::other("Unterminated version resource key"));
+        }
+        let key = UTF_16LE.decode_with_bom_removal(key_bytes).0;
 
         let end_offset = size_of::<u16>() * 3 + key_length + size_of::<u16>(); // Null word
 
@@ -52,7 +64,10 @@ impl<'a> VSHeader<'a> {
             value_length,
             r#type,
             key,
-            end_offset: end_offset.next_multiple_of(size_of::<u32>()),
+            // An empty value may omit the final alignment padding.
+            end_offset: end_offset
+                .next_multiple_of(size_of::<u32>())
+                .min(usize::from(length)),
         })
     }
 
