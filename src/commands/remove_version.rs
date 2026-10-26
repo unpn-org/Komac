@@ -15,6 +15,7 @@ use tokio::try_join;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use crate::{
+    commands::utils::RateLimit,
     environment::CI,
     github::{WINGET_PKGS_FULL_NAME, client::GitHub},
     prompts::{handle_inquire_error, text::confirm_prompt},
@@ -31,8 +32,21 @@ pub struct RemoveVersion {
     package_identifier: PackageIdentifier,
 
     /// The package's version
-    #[arg(short = 'v', long = "version")]
-    package_version: PackageVersion,
+    #[arg(
+        short = 'v',
+        long = "version",
+        required_unless_present = "all",
+        conflicts_with = "all"
+    )]
+    package_version: Option<PackageVersion>,
+
+    /// Remove all versions of the package
+    #[arg(long, hide = true)]
+    all: bool,
+
+    /// Use the per-minute rate limit, potentially hitting the hourly rate limit in 7.5 minutes
+    #[arg(long, hide = true)]
+    fast: bool,
 
     #[arg(short = 'r', long = "reason")]
     deletion_reason: Option<String>,
@@ -85,11 +99,13 @@ impl RemoveVersion {
             github.get_versions(&self.package_identifier, self.font.then_some(true))
         )?;
 
-        if !versions.contains(&self.package_version) {
+        if let Some(version) = &self.package_version
+            && !versions.contains(version)
+        {
             bail!(
                 "{} version {} does not exist in {WINGET_PKGS_FULL_NAME}",
                 self.package_identifier,
-                self.package_version,
+                version,
             );
         }
 
@@ -99,17 +115,24 @@ impl RemoveVersion {
             &self.package_identifier
         );
 
-        if let Some(pull_request) = github
-            .get_existing_pull_request(&self.package_identifier, &self.package_version, false)
-            .await?
-            .filter(|pull_request| pull_request.is_open())
-        {
+        let versions_to_remove = self.package_version.as_ref().map_or_else(
+            || versions.iter().collect::<Vec<_>>(),
+            |version| vec![version],
+        );
+        for version in &versions_to_remove {
+            let Some(pull_request) = github
+                .get_existing_pull_request(&self.package_identifier, version, false)
+                .await?
+                .filter(|pull_request| pull_request.is_open())
+            else {
+                continue;
+            };
             let created_at = pull_request.created_at.to_zoned(TimeZone::system());
             println!(
                 "There is already {} pull request for {} {} that was created on {} at {}",
                 pull_request.state,
                 self.package_identifier,
-                self.package_version,
+                version,
                 created_at.date(),
                 created_at.time()
             );
@@ -120,41 +143,59 @@ impl RemoveVersion {
             }
         }
 
+        let removal_target = self.package_version.as_ref().map_or_else(
+            || {
+                format!(
+                    "{} (all {} versions)",
+                    self.package_identifier,
+                    versions.len()
+                )
+            },
+            |version| format!("{} version {version}", self.package_identifier),
+        );
         let deletion_reason = match self.deletion_reason {
             Some(reason) => reason,
-            None => Text::new(&format!(
-                "Give a reason for removing {} version {}",
-                self.package_identifier, self.package_version
-            ))
-            .with_validator(MinLengthValidator::new(Self::MIN_REASON_LENGTH))
-            .with_validator(MaxLengthValidator::new(Self::MAX_REASON_LENGTH))
-            .prompt()
-            .map_err(handle_inquire_error)?,
+            None => Text::new(&format!("Give a reason for removing {removal_target}"))
+                .with_validator(MinLengthValidator::new(Self::MIN_REASON_LENGTH))
+                .with_validator(MaxLengthValidator::new(Self::MAX_REASON_LENGTH))
+                .prompt()
+                .map_err(handle_inquire_error)?,
+        };
+        let pull_requests = if self.all {
+            "pull requests"
+        } else {
+            "a pull request"
         };
         let should_remove_manifest = self.submit
             || confirm_prompt(&format!(
-                "Would you like to make a pull request to remove {} {}?",
-                self.package_identifier, self.package_version
+                "Would you like to make {pull_requests} to remove {removal_target}?"
             ))?;
 
         if !should_remove_manifest {
             return Ok(());
         }
 
-        let pull_request = github
-            .remove_version()
-            .identifier(&self.package_identifier)
-            .version(&self.package_version)
-            .reason(&deletion_reason)
-            .fork(&fork)
-            .winget_pkgs(&winget_pkgs)
-            .font(font)
-            .issue_resolves(&self.resolves)
-            .send()
-            .await?;
+        let rate_limit = RateLimit::new(self.fast);
+        for version in versions_to_remove {
+            rate_limit.wait().await;
 
-        if self.open_pr {
-            open::that(pull_request.url().as_str())?;
+            let pull_request = github
+                .remove_version()
+                .identifier(&self.package_identifier)
+                .version(version)
+                .reason(&deletion_reason)
+                .fork(&fork)
+                .winget_pkgs(&winget_pkgs)
+                .font(font)
+                .issue_resolves(&self.resolves)
+                .send()
+                .await?;
+
+            rate_limit.record().await;
+
+            if self.open_pr {
+                open::that(pull_request.url().as_str())?;
+            }
         }
 
         Ok(())
