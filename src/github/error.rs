@@ -1,3 +1,5 @@
+use std::{io, path::PathBuf};
+
 use color_eyre::{Report, eyre};
 use cynic::http::CynicReqwestError;
 use thiserror::Error;
@@ -7,6 +9,8 @@ use super::{WINGET_PKGS_FULL_NAME, utils::PackagePath};
 
 #[derive(Debug, Error)]
 pub enum GitHubError {
+    #[error("Failed to read local manifest path {}: {source}", path.display())]
+    LocalRead { path: PathBuf, source: io::Error },
     #[error(transparent)]
     GraphQL(eyre::Error),
     #[error(transparent)]

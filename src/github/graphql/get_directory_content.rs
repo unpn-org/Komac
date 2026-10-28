@@ -8,7 +8,10 @@ use super::{
     super::{GitHubError, MICROSOFT, WINGET_PKGS, client::GitHub, utils::PackagePath},
     GetFileContent, github_schema as schema,
 };
-use crate::github::GITHUB_REF;
+use crate::github::{
+    GITHUB_REF,
+    local::{local_manifests_enabled, paths, read_file},
+};
 
 #[derive(cynic::QueryVariables)]
 pub struct GetDirectoryContentVariables<'a> {
@@ -87,6 +90,10 @@ impl GitHub {
         R: AsRef<str>,
         P: fmt::Display,
     {
+        if local_manifests_enabled() {
+            return read_file(path.to_string()).await;
+        }
+
         let GraphQlResponse { data, errors } = self
             .run_graphql_with_retry(&GetFileContent::build(GetDirectoryContentVariables::new(
                 &owner,
@@ -107,6 +114,10 @@ impl GitHub {
         #[builder(default = "HEAD")] branch_name: &str,
         path: &PackagePath,
     ) -> Result<impl Iterator<Item = String>, GitHubError> {
+        if local_manifests_enabled() {
+            return Ok(paths(path.as_str()).await?.into_iter());
+        }
+
         let expression = format!("{branch_name}:{path}");
         let GraphQlResponse { data, errors } = self
             .run_graphql_with_retry(&GetDirectoryContent::build(
@@ -122,7 +133,11 @@ impl GitHub {
                 )
             })?;
 
-        Ok(entries.into_iter().filter_map(|entry| entry.path))
+        Ok(entries
+            .into_iter()
+            .filter_map(|entry| entry.path)
+            .collect::<Vec<_>>()
+            .into_iter())
     }
 }
 

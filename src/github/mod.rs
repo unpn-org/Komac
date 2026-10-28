@@ -1,6 +1,7 @@
 pub mod client;
 mod error;
 pub mod graphql;
+mod local;
 #[cfg(feature = "cli")]
 pub mod move_package;
 #[cfg(feature = "cli")]
