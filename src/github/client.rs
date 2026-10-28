@@ -27,9 +27,15 @@ use winget_types::{
     url::{DecodedUrl, LicenseUrl, PackageUrl, PublisherSupportUrl, PublisherUrl, ReleaseNotesUrl},
 };
 
-use super::{GitHubError, graphql::create_pull_request, retry::client};
+use super::{
+    GitHubError,
+    graphql::create_pull_request,
+    local::{files, local_manifests_enabled},
+    retry::client,
+};
 use crate::{
     github::{
+        github_ref,
         graphql::{
             create_commit::{FileAddition, FileDeletion},
             create_ref::{CreateRef, CreateRefVariables, Ref as CreateBranchRef},
@@ -188,9 +194,17 @@ impl GitHub {
         repo: &str,
         path: &PackagePath,
     ) -> Result<impl Iterator<Item = GitHubFile>, GitHubError> {
+        if local_manifests_enabled() {
+            return Ok(files(path.as_str()).await?.into_iter());
+        }
+
         let GraphQlResponse { data, errors } = self
             .run_graphql_with_retry(&GetDirectoryContentWithText::build(
-                GetDirectoryContentVariables::new(&owner, &repo, &format!("HEAD:{path}")),
+                GetDirectoryContentVariables::new(
+                    &owner,
+                    &repo,
+                    &format!("{}:{path}", github_ref()),
+                ),
             ))
             .await?;
 
@@ -203,6 +217,8 @@ impl GitHub {
                             .into_blob_text()
                             .map(|text| GitHubFile::new(name, text))
                     })
+                    .collect::<Vec<_>>()
+                    .into_iter()
             })
             .ok_or_else(|| {
                 GitHubError::graphql_errors(eyre!("failed to get directory content"), errors)
@@ -341,8 +357,7 @@ impl GitHub {
             })?;
 
             for branch in branches.into_iter().filter(|branch| {
-                branch.name != default_branch.name
-                    && branch.open_pull_requests.total_count == 0
+                branch.name != default_branch.name && branch.open_pull_requests.total_count == 0
             }) {
                 if let Some(pull_request) = branch
                     .closed_or_merged_pull_requests

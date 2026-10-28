@@ -4,7 +4,7 @@ use napi::bindgen_prelude::{Env, JsObjectValue, Object};
 use napi_derive::napi;
 
 use super::error::InvalidArgument;
-use crate::github::{set_upstream};
+use crate::github::{set_github_ref, set_upstream};
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
@@ -35,7 +35,15 @@ fn configure(env: Env) -> napi::Result<()> {
     let process_env: Object = process.get_named_property("env")?;
 
     if let Some(repository) = get_env(&process_env, "KOMAC_REPOSITORY")? {
-        set_upstream(repository.parse().map_err(|error| InvalidArgument(format!("{error}")))?);
+        set_upstream(
+            repository
+                .parse()
+                .map_err(|error| InvalidArgument(format!("{error}")))?,
+        );
+    }
+
+    if let Some(reference) = get_env(&process_env, "KOMAC_GITHUB_REF")? {
+        set_github_ref(reference);
     }
 
     let dry_run = get_env(&process_env, "DRY_RUN")?
