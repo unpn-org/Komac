@@ -63,7 +63,8 @@ impl GitHub {
             ""
         };
         let query = format!(
-            "repo:{} is:pull-request in:title {identifier} {version}{author_filter}", upstream()
+            "repo:{} is:pull-request in:title {identifier} {version}{author_filter}",
+            upstream()
         );
 
         let response = self

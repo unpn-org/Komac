@@ -7,13 +7,21 @@ use std::collections::BTreeSet;
 pub use git_file_mode::GitFileMode;
 use itertools::Itertools;
 pub use object::TreeObject;
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 pub use r#type::TreeType;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use super::{
-    super::{GitHubError, client::GitHub, upstream, utils::PackagePath},
+    super::{
+        GitHubError,
+        client::GitHub,
+        github_ref,
+        local::{get_versions, local_manifests_enabled},
+        upstream,
+        utils::PackagePath,
+    },
     error::RestError,
     transport::SendJson,
 };
@@ -41,6 +49,10 @@ impl GitHub {
         package_identifier: &PackageIdentifier,
         font: Option<bool>,
     ) -> Result<(BTreeSet<PackageVersion>, bool), GitHubError> {
+        if local_manifests_enabled() {
+            return get_versions(package_identifier, font).await;
+        }
+
         if let Some(font) = font {
             return self
                 .get_all_versions(
@@ -99,10 +111,12 @@ impl GitHub {
     ) -> Result<BTreeSet<PackageVersion>, GitHubError> {
         const SEPARATOR: char = '/';
 
+        let expression = format!("{}:{path}", github_ref());
+        let tree = utf8_percent_encode(&expression, NON_ALPHANUMERIC);
         let GitTree { tree, .. } = self
             .rest(
                 Method::GET,
-                &format!("repos/{owner}/{repo}/git/trees/HEAD:{path}?recursive=true"),
+                &format!("repos/{owner}/{repo}/git/trees/{tree}?recursive=true"),
             )
             .send_json::<GitTree>()
             .await?;
