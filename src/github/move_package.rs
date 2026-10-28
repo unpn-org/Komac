@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use anstream::println;
 use color_eyre::eyre::{Context, Result, ensure, eyre};
 use cynic::QueryBuilder;
@@ -15,8 +17,11 @@ use super::{
     graphql::{
         create_commit::{FileAddition, FileDeletion},
         get_directory_content::GetDirectoryContentVariables,
-        get_directory_content_with_text::{GetDirectoryContentWithText, TreeEntry},
+        get_directory_content_with_text::{
+            Blob, BlobObject, GetDirectoryContentWithText, TreeEntry,
+        },
     },
+    local::{files, local_manifests_enabled},
     utils::{PackagePath, branch_name},
 };
 use crate::{
@@ -144,12 +149,32 @@ impl PackageMove {
     }
 }
 
-// Read both sides at the commit used for every PR, and distinguish missing paths from API errors.
+// Use the local working tree when selected; otherwise read both sides at the PR's base commit.
 async fn directory(
     github: &GitHub,
     upstream: &RepositoryData,
     path: &PackagePath,
 ) -> Result<Option<Vec<TreeEntry>>, GitHubError> {
+    if local_manifests_enabled() {
+        return match files(path.as_str()).await {
+            Ok(files) => Ok(Some(
+                files
+                    .into_iter()
+                    .map(|file| TreeEntry {
+                        name: file.name,
+                        object: Some(BlobObject::Blob(Blob {
+                            text: Some(file.text),
+                        })),
+                    })
+                    .collect(),
+            )),
+            Err(GitHubError::LocalRead { source, .. }) if source.kind() == ErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        };
+    }
+
     let expression = format!("{}:{path}", upstream.default_branch_oid.as_str());
     let response = github
         .run_graphql_with_retry(&GetDirectoryContentWithText::build(
