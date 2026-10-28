@@ -13,7 +13,12 @@ pub use r#type::TreeType;
 use winget_types::{PackageIdentifier, PackageVersion};
 
 use super::{
-    super::{GITHUB_REF, GitHubError, MICROSOFT, WINGET_PKGS, client::GitHub, utils::PackagePath},
+    super::{
+        GITHUB_REF, GitHubError, MICROSOFT, WINGET_PKGS,
+        client::GitHub,
+        local::{get_versions, local_manifests_enabled},
+        utils::PackagePath,
+    },
     GITHUB_JSON_MIME, REST_API_URL, REST_API_VERSION, X_GITHUB_API_VERSION,
 };
 
@@ -40,6 +45,10 @@ impl GitHub {
         package_identifier: &PackageIdentifier,
         font: Option<bool>,
     ) -> Result<(BTreeSet<PackageVersion>, bool), GitHubError> {
+        if local_manifests_enabled() {
+            return get_versions(package_identifier, font).await;
+        }
+
         if let Some(font) = font {
             return self
                 .get_all_versions(

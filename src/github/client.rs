@@ -27,7 +27,12 @@ use winget_types::{
     url::{DecodedUrl, LicenseUrl, PackageUrl, PublisherSupportUrl, PublisherUrl, ReleaseNotesUrl},
 };
 
-use super::{GitHubError, graphql::create_pull_request, retry::client};
+use super::{
+    GitHubError,
+    graphql::create_pull_request,
+    local::{files, local_manifests_enabled},
+    retry::client,
+};
 use crate::{
     github::{
         GITHUB_REF, MICROSOFT, WINGET_PKGS, WINGET_PKGS_FULL_NAME,
@@ -176,6 +181,10 @@ impl GitHub {
         repo: &str,
         path: &PackagePath,
     ) -> Result<impl Iterator<Item = GitHubFile>, GitHubError> {
+        if local_manifests_enabled() {
+            return Ok(files(path.as_str()).await?.into_iter());
+        }
+
         let expression = format!("{GITHUB_REF}:{path}");
         let GraphQlResponse { data, errors } = self
             .run_graphql_with_retry(&GetDirectoryContentWithText::build(
@@ -192,6 +201,8 @@ impl GitHub {
                             .into_blob_text()
                             .map(|text| GitHubFile::new(name, text))
                     })
+                    .collect::<Vec<_>>()
+                    .into_iter()
             })
             .ok_or_else(|| {
                 GitHubError::graphql_errors(eyre!("failed to get directory content"), errors)
