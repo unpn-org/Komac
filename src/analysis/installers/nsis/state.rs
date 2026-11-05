@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use indicatif::HumanCount;
+use std::io::{self, Cursor};
 use itertools::Either;
 use tracing::{Level, debug, debug_span, level_enabled, subscriber::NoSubscriber};
 use zerocopy::{FromBytes, I32, LE, U16};
@@ -29,6 +30,7 @@ const MAX_EXECUTED_ENTRIES: usize = 1 << 20;
 const MAX_LOGGED_EXECUTIONS: u16 = 3;
 
 pub struct NsisState<'data> {
+    pub read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     pub str_block: &'data [u8],
     entries: &'data [Entry],
     pub language_table: &'data LanguageTable,
@@ -48,8 +50,10 @@ impl<'data> NsisState<'data> {
         data: &'data [u8],
         header: &Header,
         manifest: Option<&str>,
+        read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     ) -> Result<Self, NsisError> {
         let mut state = Self {
+            read_file,
             str_block: header.blocks().strings_block(data),
             entries: header.blocks().entries(data)?,
             language_table: LanguageTable::primary_language(data, header.blocks())?,
