@@ -299,6 +299,7 @@ pub async fn update_package(
             .maybe_replace_version(replace_version)
             .issue_resolves(&[])
             .automated(true)
+            .draft(options.draft.unwrap_or_default())
             .send()
             .await
             .wrap_err("Failed to create pull request")?;
