@@ -27,6 +27,7 @@ use seek_from::SeekFrom;
 use show_window::ShowWindow;
 use thiserror::Error;
 use tracing::debug;
+use typed_path::Utf8WindowsPath;
 use window_message::WindowMessage;
 use zerocopy::{I32, Immutable, KnownLayout, LE, TryFromBytes, U64};
 
@@ -35,6 +36,7 @@ use super::{
     registry::{RegRoot, RegType},
     state::NsisState,
 };
+use crate::analysis::installers::pe::{PE, VSVersionInfo};
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum EntryError {
@@ -265,9 +267,9 @@ pub enum Entry {
         low_out: I32<LE>,
     } = 42u32.to_le(),
     GetDLLVersion {
-        file: I32<LE>,
         high_out: I32<LE>,
         low_out: I32<LE>,
+        file: I32<LE>,
         fixed_offset: I32<LE>,
     } = 43u32.to_le(),
     RegisterDLL {
@@ -1107,7 +1109,42 @@ impl Entry {
                 low_out,
                 fixed_offset,
             } => {
+                let file = state.get_string(file.get());
                 debug!("GetDLLVersion: {file} {high_out} {low_out} {fixed_offset}");
+                let version = (|| {
+                    let position = state
+                        .file_system
+                        .get(&*file, RelativeLocation::Current)
+                        .or_else(|| {
+                            // $_OUTDIR paths are represented relative to the mock root.
+                            let relative = Utf8WindowsPath::new(&file)
+                                .strip_prefix(state.variables.install_dir()?)
+                                .ok()?;
+                            state.file_system.get(relative, RelativeLocation::Root)
+                        })?
+                        .position()?;
+                    let mut reader = (state.read_file)(position).ok()?;
+                    let pe = PE::read_from(&mut reader).ok()?;
+                    let bytes = pe.vs_version_info(&mut reader).ok()?;
+                    let info = VSVersionInfo::read_from(&bytes).ok()?;
+                    match fixed_offset.get() {
+                        0 => Some(info.fixed.file_version_raw()),
+                        2 => Some(info.fixed.product_version_raw()),
+                        _ => None,
+                    }
+                })();
+                let values = if let Some((major, minor, patch, build)) = version {
+                    let high = (u32::from(major) << 16) | u32::from(minor);
+                    let low = (u32::from(patch) << 16) | u32::from(build);
+                    [(high as i32).to_string(), (low as i32).to_string()]
+                } else {
+                    state.exec_flags[ExecFlag::Errors] =
+                        (state.exec_flags[ExecFlag::Errors].get() + 1).into();
+                    [String::new(), String::new()]
+                };
+                for (output, value) in [high_out, low_out].into_iter().zip(values) {
+                    state.variables.insert(output.get() as usize, value);
+                }
             }
             Self::RegisterDLL {
                 dll_file_name,
@@ -1560,7 +1597,30 @@ impl Entry {
 
 #[cfg(test)]
 mod tests {
+    use zerocopy::TryFromBytes;
+
     use super::Entry;
+
+    #[test]
+    fn get_dll_version_operand_order() {
+        let bytes: Vec<_> = [43_i32, 1, 2, 71, 2, 0, 0]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        let Entry::GetDLLVersion {
+            high_out,
+            low_out,
+            file,
+            fixed_offset,
+        } = Entry::try_read_from_bytes(&bytes).unwrap()
+        else {
+            panic!("wrong opcode")
+        };
+        assert_eq!(high_out.get(), 1);
+        assert_eq!(low_out.get(), 2);
+        assert_eq!(file.get(), 71);
+        assert_eq!(fixed_offset.get(), 2);
+    }
 
     #[test]
     fn entry_size() {
