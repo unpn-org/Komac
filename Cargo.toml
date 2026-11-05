@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "komac"
 version = "2.17.2"
@@ -36,6 +38,20 @@ lto = true
 strip = true
 opt-level = 3 # Anthelion
 
+# Address-significance metadata lets LLD safely fold identical CLI functions.
+# Fat LTO emits dependency code in the final package's object file.
+[profile.release.package.komac]
+rustflags = ["-C", "llvm-args=--addrsig"]
+strip = true
+
+# Keep the addon on its original compiler flags and code layout.
+[profile.release-node]
+inherits = "release"
+
+[profile.release-node.package.komac]
+rustflags = []
+strip = true
+
 [dependencies]
 anstream = "1.0.0"
 base64ct = { version = "1.8.3", features = ["std"] }
@@ -60,12 +76,13 @@ html2text = "0.17.4"
 indexmap = "2.14.2"
 indextree = "4.9.2"
 indicatif = "0.18.6"
-inno = "0.7.3"
+# 0.7.1 has identical Rust source to 0.7.3 and shares sevenz-rust2's LZMA decoder.
+inno = "=0.7.1"
 inquire = { version = "0.9.4", optional = true }
 itertools = "0.15.0"
 itoa = "1.0.18"
 keyring-core = { version = "1.0.1", optional = true }
-lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "optimization"] }
+lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", "optimization"] }
 memchr = "2.8.3"
 msi = "0.11.1"
 nt-time = { version = "0.15.0", features = ["jiff"] }
