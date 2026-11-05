@@ -1,5 +1,6 @@
 mod entry;
 mod error;
+mod file_data;
 mod file_system;
 mod first_header;
 mod header;
@@ -11,14 +12,10 @@ mod strings;
 mod variables;
 mod version;
 
-use std::{
-    io,
-    io::{Read, Seek, SeekFrom},
-};
+use std::io::{Read, Seek};
 
 use camino::Utf8Path;
 pub use error::NsisError;
-use flate2::{Decompress, read::ZlibDecoder};
 use msi::LanguageId;
 use registry::Registry;
 use state::NsisState;
@@ -33,24 +30,22 @@ use winget_types::{
         Installer, InstallerType, Scope,
     },
 };
-use zerocopy::LE;
 
 use super::{
     nsis::{
         entry::{Entry, EntryError},
         file_system::FsEntry,
         first_header::FirstHeader,
-        header::{Compression, Decoder, Decompressed, Header, nsis_bzip2},
+        header::{Decompressed, Header},
     },
     pe::{PE, utils::machine_from_exe_reader},
-    utils::{LzmaStreamHeader, RELATIVE_PROGRAM_FILES_64, RELATIVE_TEMP_FOLDER},
+    utils::{RELATIVE_PROGRAM_FILES_64, RELATIVE_TEMP_FOLDER},
 };
 use crate::{
     analysis::{
         Installers, extensions::FileExtension,
         installers::nsis::first_header::finder::FirstHeaderFinder,
     },
-    read::ReadBytesExt,
     traits::{FromMachine, IntoWingetArchitecture},
 };
 
@@ -87,7 +82,21 @@ impl Nsis {
 
         debug!(?header);
 
-        let mut state = NsisState::new(&decompressed_data, &header, manifest.as_deref())?;
+        let mut file_data = file_data::FileData::new(
+            decoder.into_inner(),
+            finder.data_offset(),
+            finder.first_header().length_of_header(),
+            is_solid,
+            non_solid_start_offset,
+            compression,
+        );
+        let mut read_file = |position| file_data.read(position);
+        let mut state = NsisState::new(
+            &decompressed_data,
+            &header,
+            manifest.as_deref(),
+            &mut read_file,
+        )?;
 
         // https://nsis.sourceforge.io/Reference/.onInit
         if header.code_on_init() != -1 {
@@ -169,73 +178,8 @@ impl Nsis {
                     })
                     .min_by_key(|file| levenshtein(file.name(), &app_name.to_string_lossy()))
                     .and_then(|file| {
-                        let mut position = file.position()?;
-                        if !is_solid {
-                            position += finder.data_offset()
-                                + u64::from(non_solid_start_offset)
-                                + size_of::<u32>() as u64;
-                        }
-
-                        if !is_solid && compression == Compression::BZip2 {
-                            let reader = decoder.into_inner();
-                            reader
-                                .seek(SeekFrom::Start(position - size_of::<u32>() as u64))
-                                .ok()?;
-                            let compressed_size = reader.read_u32::<LE>().ok()? & !0x8000_0000;
-                            let decoder = nsis_bzip2::Decoder::new(
-                                reader,
-                                Some(compressed_size as usize),
-                                1 << 20,
-                            )
-                            .ok()?;
-                            let machine = machine_from_exe_reader(decoder).ok()?;
-                            return Some(Architecture::from_machine(machine));
-                        }
-
-                        if is_solid && compression == Compression::BZip2 {
-                            let reader = decoder.into_inner();
-                            reader.seek(SeekFrom::Start(data_offset)).ok()?;
-                            let max_output =
-                                usize::try_from(position).ok()?.checked_add(1 << 20)?;
-                            let mut decoder =
-                                nsis_bzip2::Decoder::new(reader, None, max_output).ok()?;
-                            io::copy(&mut decoder.by_ref().take(position), &mut io::sink()).ok()?;
-                            let machine = machine_from_exe_reader(decoder).ok()?;
-                            return Some(Architecture::from_machine(machine));
-                        }
-
-                        let mut decoder = if is_solid {
-                            let decoder = decoder.into_inner();
-                            decoder.seek(SeekFrom::Start(position)).ok()?;
-                            match compression {
-                                Compression::Lzma(filter_flag) => {
-                                    decoder
-                                        .seek_relative(
-                                            i64::try_from(position).ok()? + i64::from(filter_flag),
-                                        )
-                                        .ok()?;
-                                    let header = decoder.read_t::<LzmaStreamHeader>().ok()?;
-                                    Decoder::new_lzma1(decoder, header).ok()?
-                                }
-                                Compression::BZip2 => return None,
-                                Compression::Zlib => {
-                                    Decoder::Zlib(ZlibDecoder::new_with_decompress(
-                                        decoder,
-                                        Decompress::new(false),
-                                    ))
-                                }
-                                Compression::None => Decoder::None(decoder),
-                            }
-                        } else {
-                            decoder
-                        };
-
-                        if is_solid {
-                            // Seek to file
-                            io::copy(&mut decoder.by_ref().take(position), &mut io::sink()).ok()?;
-                        }
-
-                        let machine = machine_from_exe_reader(decoder).ok()?;
+                        let mut reader = (state.read_file)(file.position()?).ok()?;
+                        let machine = machine_from_exe_reader(&mut reader).ok()?;
                         Some(Architecture::from_machine(machine))
                     })
             });
