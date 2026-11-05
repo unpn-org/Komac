@@ -203,3 +203,22 @@ mod tests {
         assert_eq!(cow.into_string_lossy(), "abcdef");
     }
 }
+
+// Values produced by simulated APIs are Unicode text rather than borrowed installer bytes.
+impl From<&str> for NsisCow<'_> {
+    fn from(value: &str) -> Self {
+        NsisString::from_str(value, true).into()
+    }
+}
+
+impl From<String> for NsisCow<'_> {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl From<Cow<'_, str>> for NsisCow<'_> {
+    fn from(value: Cow<'_, str>) -> Self {
+        Self::from(value.as_ref())
+    }
+}
