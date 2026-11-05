@@ -1,4 +1,7 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    io::{self, Cursor},
+};
 
 use encoding_rs::{UTF_16LE, WINDOWS_1252};
 use itertools::Either;
@@ -21,6 +24,7 @@ use crate::analysis::installers::nsis::{
 };
 
 pub struct NsisState<'data> {
+    pub read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     pub str_block: &'data [u8],
     entries: &'data [Entry],
     pub language_table: &'data LanguageTable,
@@ -40,8 +44,10 @@ impl<'data> NsisState<'data> {
         data: &'data [u8],
         header: &Header,
         manifest: Option<&str>,
+        read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     ) -> Result<Self, NsisError> {
         let mut state = Self {
+            read_file,
             str_block: header.blocks().strings_block(data),
             entries: header.blocks().entries(data)?,
             language_table: LanguageTable::primary_language(data, header.blocks())?,
