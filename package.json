@@ -15,7 +15,7 @@
 	"main": "index.js",
 	"scripts": {
 		"artifacts": "napi artifacts",
-		"build": "napi build --platform --release --no-default-features --features node --esm --strip",
+		"build": "napi build --platform --profile release-node --no-default-features --features node --esm --strip",
 		"build:debug": "napi build --platform --no-default-features --features node --esm",
 		"prepublishOnly": "napi prepublish -t npm --no-gh-release",
 		"preversion": "bun run build && git add .",
