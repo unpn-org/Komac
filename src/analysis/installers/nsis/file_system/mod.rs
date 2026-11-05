@@ -195,6 +195,13 @@ impl FileSystem {
     where
         T: AsRef<Utf8WindowsPath>,
     {
+        self.get(path, location).is_some()
+    }
+
+    pub fn get<T>(&self, path: T, location: RelativeLocation) -> Option<&FsEntry>
+    where
+        T: AsRef<Utf8WindowsPath>,
+    {
         let mut current = match location {
             RelativeLocation::Root => self.root,
             RelativeLocation::Current => self.current_dir,
@@ -215,7 +222,7 @@ impl FileSystem {
                             .is_some_and(|item| item.get().name() == part)
                     }) {
                         if position.is_last() {
-                            return true;
+                            return self.arena.get(directory).map(Node::get);
                         }
                         current = directory;
                     } else {
@@ -226,7 +233,7 @@ impl FileSystem {
             }
         }
 
-        false
+        None
     }
 
     /// Deletes a path.
