@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "komac"
 version = "2.17.2"
@@ -35,6 +37,20 @@ codegen-units = 1
 lto = true
 strip = true
 opt-level = 3 # Anthelion
+
+# Address-significance metadata lets LLD safely fold identical CLI functions.
+# Fat LTO emits dependency code in the final package's object file.
+[profile.release.package.komac]
+rustflags = ["-C", "llvm-args=--addrsig"]
+strip = true
+
+# Keep the addon on its original compiler flags and code layout.
+[profile.release-node]
+inherits = "release"
+
+[profile.release-node.package.komac]
+rustflags = []
+strip = true
 
 [dependencies]
 anstream = "1.0.0"
