@@ -134,6 +134,8 @@ pub struct UpdatePackageRequest {
     /// Generate manifests locally or submit them as a pull request.
     #[napi(ts_type = "'generate' | 'submit'")]
     pub mode: String,
+    /// Create a draft pull request when `mode` is `submit`. Defaults to `false`.
+    pub draft: Option<bool>,
 }
 
 /// Existing package version to replace.

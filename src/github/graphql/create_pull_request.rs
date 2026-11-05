@@ -116,11 +116,13 @@ impl GitHub {
         branch_name: &str,
         title: &str,
         body: &str,
+        draft: bool,
     ) -> Result<PullRequest, GitHubError> {
         let operation = CreatePullRequest::build(CreatePullRequestVariables {
             input: CreatePullRequestInput::builder()
                 .base_ref_name(branch_name)
                 .body(body)
+                .draft(draft)
                 .head_ref_name(fork_ref_name)
                 .head_repository_id(fork_id)
                 .repository_id(repository_id)
