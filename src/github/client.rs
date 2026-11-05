@@ -548,6 +548,7 @@ impl GitHub {
                     .issue_resolves(issue_resolves)
                     .alternative_text(reason)
                     .build(),
+                false,
             )
             .await?;
 
@@ -568,6 +569,7 @@ impl GitHub {
         replace_version: Option<&PackageVersion>,
         issue_resolves: &[NonZeroU32],
         #[builder(default)] automated: bool,
+        #[builder(default)] draft: bool,
         created_with: Option<&str>,
         created_with_url: Option<&DecodedUrl>,
     ) -> Result<create_pull_request::PullRequest, GitHubError> {
@@ -619,6 +621,7 @@ impl GitHub {
                 .maybe_created_with(created_with)
                 .maybe_created_with_url(created_with_url)
                 .build(),
+            draft,
         )
         .await
     }
