@@ -129,6 +129,7 @@ impl PackageMove {
                     &upstream.default_branch_name,
                     &title,
                     &body,
+                    false,
                 )
                 .await?;
             rate_limit.record().await;
