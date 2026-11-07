@@ -46,6 +46,7 @@ pub struct NsisState<'data> {
     pub status_up_hack: I32<LE>,
     pub mock_caller: MockCaller,
     version: NsisVersion,
+    string_version: NsisVersion,
     file_positions: Vec<Option<u64>>,
     entry_index: usize,
 }
@@ -73,6 +74,7 @@ impl<'data> NsisState<'data> {
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
             version: NsisVersion::default(),
+            string_version: NsisVersion::default(),
             file_positions: Vec::new(),
             entry_index: 0,
         };
@@ -82,12 +84,17 @@ impl<'data> NsisState<'data> {
             state.language_table.id().to_string(),
         );
         state.version = NsisVersion::detect(state.str_block);
+        state.string_version = state.version;
         state.entries = if header.indexed_files().is_some() {
             Cow::Owned(header.blocks().indexed_entries(data)?)
         } else if is_bi {
             let (entries, positions) = header.blocks().bi_entries(data)?;
             state.file_positions = positions;
             Cow::Owned(entries)
+        } else if state.version.is_park() {
+            header
+                .blocks()
+                .park_entries(data, state.str_block.starts_with(b"\0\0"))?
         } else {
             Cow::Borrowed(header.blocks().entries(data)?)
         };
@@ -159,11 +166,18 @@ impl<'data> NsisState<'data> {
     /// shell folders, and language strings it references. A negative offset refers to a string in
     /// the language table. The string is borrowed from the strings block when it needs no
     /// substitution, and is `$ERROR` if the offset is invalid.
+    pub fn get_string(&self, relative_offset: i32) -> NsisCow<'data> {
+        self.get_string_inner(relative_offset, 0)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Truncating u16 as u8 is intentional"
     )]
-    pub fn get_string(&self, relative_offset: i32) -> NsisCow<'data> {
+    fn get_string_inner(&self, relative_offset: i32, depth: usize) -> NsisCow<'data> {
+        if depth >= 64 {
+            return NsisCow::Borrowed(NsisStr::error());
+        }
         // The strings block starts with a UTF-16 null byte if it is Unicode
         let unicode = self.is_unicode();
 
@@ -215,21 +229,23 @@ impl<'data> NsisState<'data> {
             Either::Right(string_bytes)
         };
 
-        // NSIS Park (the Unicode fork of NSIS 2.45-2.46) uses different special codes that aren't
-        // supported yet. Return the raw string rather than misinterpreting its characters as
-        // NSIS 2 codes.
-        if self.is_park() {
-            return NsisCow::Borrowed(NsisStr::from_bytes(string_bytes, unicode));
-        }
+        // Park's Unicode fork uses U+E000..U+E003 and 15-bit parameters.
+        let normalize_code = |unit: u16| {
+            if unicode && self.is_park() && (0xE000..=0xE003).contains(&unit) {
+                unit - 0xE000 + 252
+            } else {
+                unit
+            }
+        };
 
         // Check whether the string contains any special characters that need to be decoded
         let contains_code = match string_chars {
             Either::Left(chars) => chars
                 .iter()
-                .any(|char| NsCode::is_code(char.get(), self.version)),
+                .any(|char| NsCode::is_code(normalize_code(char.get()), self.string_version)),
             Either::Right(bytes) => bytes
                 .iter()
-                .any(|&char| NsCode::is_code(char, self.version)),
+                .any(|&char| NsCode::is_code(char, self.string_version)),
         };
 
         // If the string doesn't have any special characters, we can just decode it normally
@@ -248,7 +264,9 @@ impl<'data> NsisState<'data> {
             if buf.len() >= MAX_STRING_LENGTH {
                 break;
             }
-            if let Some(code) = NsCode::try_new_with_version(current, self.version) {
+            if let Some(code) =
+                NsCode::try_new_with_version(normalize_code(current), self.string_version)
+            {
                 let Some(next) = characters.next() else {
                     break;
                 };
@@ -264,13 +282,19 @@ impl<'data> NsisState<'data> {
                     if code.is_shell() {
                         Shell::resolve(&mut buf, self, special_char);
                     } else {
-                        let index = usize::from(decode_number_from_char(special_char));
+                        let index = usize::from(if unicode && self.is_park() {
+                            special_char & 0x7FFF
+                        } else {
+                            decode_number_from_char(special_char)
+                        });
                         if code.is_var() {
                             NsVar::resolve(&mut buf, index, &self.variables, self.version);
                         } else if code.is_lang()
                             && let Some(offset) = self.language_table.string_offset(index)
                         {
-                            buf.push_bounded_nsis(self.get_string(offset).as_nsis_str());
+                            buf.push_bounded_nsis(
+                                self.get_string_inner(offset, depth + 1).as_nsis_str(),
+                            );
                         }
                     }
                     continue;
@@ -497,6 +521,7 @@ mod tests {
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
             version: NsisVersion::v3(),
+            string_version: NsisVersion::v3(),
             file_positions: Vec::new(),
             entry_index: 0,
         }
@@ -605,5 +630,42 @@ mod tests {
             state(b"\0", &[], &mut read).resolve_address(-1),
             Err(EntryError::Invalid)
         );
+    }
+    #[test]
+    fn decodes_park_variable_parameters() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0\0\x01\xe0\x00\x80\0\0", &[], &mut read);
+        state.version = NsisVersion::detect(state.str_block);
+        // Two Park code points are needed for automatic detection.
+        state.version = NsisVersion::from_manifest("<assembly><description>Nullsoft Install System v2.46.5-Unicode</description></assembly>").unwrap();
+        state.string_version = state.version;
+        state.variables.insert(0, "App");
+        assert_eq!(state.get_string(1), "App");
+    }
+
+    #[test]
+    fn advertised_version_does_not_replace_observed_string_encoding() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0\0\x03\0\x80\x80\0\0", &[], &mut read);
+        state.version = NsisVersion::new(2, 46);
+        state.variables.insert(0, "App");
+        assert_eq!(state.get_string(1), "App");
+    }
+
+    #[test]
+    fn handles_truncated_and_unterminated_strings() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        assert_eq!(state(b"", &[], &mut read).get_string(0), "");
+        assert_eq!(state(b"\0tail", &[], &mut read).get_string(1), "tail");
+        assert_eq!(state(b"\0\0t\0", &[], &mut read).get_string(1), "t");
+        assert_eq!(state(b"\0\0t", &[], &mut read).get_string(1), "$ERROR");
+        assert_eq!(state(b"\0", &[], &mut read).get_string(i32::MAX), "$ERROR");
+    }
+
+    #[test]
+    fn bounds_recursive_language_strings() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let state = state(b"\0\0\x01\0\x80\x80\0\0", &[], &mut read);
+        assert_eq!(state.get_string(1), "$ERROR");
     }
 }
