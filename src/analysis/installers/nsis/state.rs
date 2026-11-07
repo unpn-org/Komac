@@ -27,7 +27,7 @@ use crate::analysis::installers::nsis::{
 pub struct NsisState<'data> {
     pub read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     pub str_block: &'data [u8],
-    entries: &'data [Entry],
+    entries: Cow<'data, [Entry]>,
     pub language_table: &'data LanguageTable,
     pub stack: Vec<Cow<'data, str>>,
     pub variables: Variables<'data>,
@@ -39,6 +39,8 @@ pub struct NsisState<'data> {
     pub status_up_hack: I32<LE>,
     pub mock_caller: MockCaller,
     version: NsisVersion,
+    file_positions: Vec<Option<u64>>,
+    entry_index: usize,
 }
 
 impl<'data> NsisState<'data> {
@@ -47,11 +49,12 @@ impl<'data> NsisState<'data> {
         header: &Header,
         manifest: Option<&str>,
         read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
+        is_bi: bool,
     ) -> Result<Self, NsisError> {
         let mut state = Self {
             read_file,
             str_block: header.blocks().strings_block(data),
-            entries: header.blocks().entries(data)?,
+            entries: Cow::Borrowed(&[]),
             language_table: LanguageTable::primary_language(data, header.blocks())?,
             stack: Vec::new(),
             variables: Variables::new(),
@@ -63,12 +66,29 @@ impl<'data> NsisState<'data> {
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
             version: NsisVersion::default(),
+            file_positions: Vec::new(),
+            entry_index: 0,
         };
 
+        state.variables.insert(
+            Variables::NUM_REGISTERS + super::strings::PredefinedVar::Language as usize,
+            state.language_table.id().to_string(),
+        );
+        state.version = NsisVersion::detect(state.str_block);
+        state.entries = if header.indexed_files().is_some() {
+            Cow::Owned(header.blocks().indexed_entries(data)?)
+        } else if is_bi {
+            let (entries, positions) = header.blocks().bi_entries(data)?;
+            state.file_positions = positions;
+            Cow::Owned(entries)
+        } else {
+            Cow::Borrowed(header.blocks().entries(data)?)
+        };
         state.version = manifest
             .and_then(NsisVersion::from_manifest)
             .or_else(|| NsisVersion::from_branding_text(&state))
-            .unwrap_or_else(|| NsisVersion::detect(state.str_block));
+            .filter(|_| !state.version.is_park())
+            .unwrap_or(state.version);
 
         debug!(version = %state.version);
 
@@ -225,6 +245,14 @@ impl<'data> NsisState<'data> {
         bound_string(Cow::Owned(buf))
     }
 
+    pub fn file_position(&self, encoded: i32) -> u64 {
+        self.file_positions
+            .get(self.entry_index)
+            .copied()
+            .flatten()
+            .unwrap_or(u64::from(encoded as u32))
+    }
+
     pub fn registry_root(&self, root: super::registry::RegRoot) -> super::registry::RegRoot {
         root.resolve(
             self.exec_flags[super::entry::ExecFlag::ShellVarContext].get() != 0,
@@ -262,6 +290,7 @@ impl<'data> NsisState<'data> {
             let span = debug_span!("", "{}", index + 1);
             let _enter = span.enter();
 
+            self.entry_index = index;
             let entry = *self.entries.get(index).ok_or(EntryError::Invalid)?;
             // Interpret calls using an explicit stack: recursive Rust calls can overflow
             // before the loop watchdog has an opportunity to run.
@@ -384,7 +413,7 @@ mod tests {
         NsisState {
             read_file,
             str_block: strings,
-            entries,
+            entries: Cow::Borrowed(entries),
             language_table,
             stack: Vec::new(),
             variables: Variables::new(),
@@ -396,6 +425,8 @@ mod tests {
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
             version: NsisVersion::v3(),
+            file_positions: Vec::new(),
+            entry_index: 0,
         }
     }
     #[test]

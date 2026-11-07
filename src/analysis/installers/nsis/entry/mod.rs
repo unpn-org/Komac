@@ -412,6 +412,9 @@ pub enum Entry {
     FindProcess = 71u32.to_le(),
     GetFontVersion = 72u32.to_le(),
     GetFontName = 73u32.to_le(),
+    VerifyExternalFile {
+        path: I32<LE>,
+    } = 74u32.to_le(),
 }
 
 impl Entry {
@@ -422,6 +425,13 @@ impl Entry {
     )]
     pub fn execute(&self, state: &mut NsisState) -> Result<i32, EntryError> {
         match self {
+            Self::VerifyExternalFile { path } => {
+                warn!(
+                    "NSISBI external payload requires independent validation: {}",
+                    state.get_string(path.get())
+                );
+            }
+
             Self::Invalid => {
                 debug!("Invalid");
                 return Err(EntryError::Invalid);
@@ -706,7 +716,7 @@ impl Entry {
                 state.file_system.create_file(
                     &*name,
                     date,
-                    position.get().unsigned_abs(),
+                    state.file_position(position.get()),
                     RelativeLocation::Current,
                 );
             }
@@ -1593,7 +1603,7 @@ impl Entry {
                 state.file_system.create_file(
                     &*name,
                     None,
-                    offset.get().unsigned_abs(),
+                    state.file_position(offset.get()),
                     RelativeLocation::Current,
                 );
             }
