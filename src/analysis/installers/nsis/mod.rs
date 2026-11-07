@@ -344,6 +344,15 @@ impl Installers for Nsis {
                 self.install_directory
                     .as_deref()
                     .filter(|path| {
+                        let unresolved = path.as_str().contains("$ERROR")
+                            || path.components().next().is_some_and(|component| {
+                                !component.as_str().is_empty()
+                                    && component.as_str().bytes().all(|byte| byte.is_ascii_digit())
+                            });
+                        if unresolved {
+                            warn!(location = path.as_str(), "Unresolved install location was omitted; dependent metadata requires independent validation");
+                            return false;
+                        }
                         !path.components().next().is_none_or(|component| {
                             component
                                 .as_str()
@@ -381,24 +390,33 @@ mod tests {
     }
 
     #[test]
-    fn keeps_nsis_scope_when_detected_scope_matches_install_location_scope() {
-        let installer =
-            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App")
-                .installers()
-                .remove(0);
-
-        assert_eq!(installer.scope, Some(Scope::Machine));
+    fn unresolved_locations_do_not_become_installation_metadata() {
+        for path in [
+            "0",
+            "1",
+            "1610612752",
+            r"0\sunsama",
+            r"%ProgramFiles%\Browser\$ERROR",
+        ] {
+            let nsis = nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, path);
+            assert!(
+                nsis.installers()[0].installation_metadata.is_empty(),
+                "{path}"
+            );
+        }
+        for path in [
+            r"%ProgramFiles%\7-Zip",
+            r"C:\123",
+            r"%LocalAppData%\Programs\App",
+        ] {
+            let nsis = nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, path);
+            assert!(
+                !nsis.installers()[0].installation_metadata.is_empty(),
+                "{path}"
+            );
+        }
     }
 
-    #[test]
-    fn does_not_set_nsis_scope_when_detected_scope_conflicts_with_install_location_scope() {
-        let installer =
-            nsis_with_scope_signals(RegRoot::HKEY_CURRENT_USER, r"%ProgramFiles%\Test App")
-                .installers()
-                .remove(0);
-
-        assert_eq!(installer.scope, None);
-    }
     #[test]
     fn arp_values_are_kept_with_their_own_uninstall_key() {
         let mut nsis =
@@ -471,5 +489,25 @@ mod tests {
         );
         assert!(nsis.installers()[0].apps_and_features_entries.is_empty());
         assert_eq!(nsis.display_name(), None);
+    }
+
+    #[test]
+    fn keeps_nsis_scope_when_detected_scope_matches_install_location_scope() {
+        let installer =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App")
+                .installers()
+                .remove(0);
+
+        assert_eq!(installer.scope, Some(Scope::Machine));
+    }
+
+    #[test]
+    fn does_not_set_nsis_scope_when_detected_scope_conflicts_with_install_location_scope() {
+        let installer =
+            nsis_with_scope_signals(RegRoot::HKEY_CURRENT_USER, r"%ProgramFiles%\Test App")
+                .installers()
+                .remove(0);
+
+        assert_eq!(installer.scope, None);
     }
 }
