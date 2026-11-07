@@ -738,7 +738,7 @@ impl Entry {
             }
             Self::StrLen { output, input } => {
                 let input = state.get_string(input.get());
-                let length = input.chars().count();
+                let length = input.encode_utf16().count();
 
                 debug!(r#"StrLen ${output} "{input}" # = {length}"#);
 
@@ -770,50 +770,27 @@ impl Entry {
                 let max_length = state.get_int(max_length.get());
 
                 let start_position = state.get_int(start_position.get());
-                let char_count = source.chars().count();
-
-                let mut result = source.clone();
-
-                if !source.is_empty() {
-                    // Get the start position as a usize, or add char_count to it to turn a
-                    // negative offset into a positive one.
-                    if let Ok(start_char) = usize::try_from(start_position)
-                        .or_else(|_| usize::try_from((start_position) + char_count as i32))
-                        .map(|start| start.min(char_count))
-                    {
-                        let start_byte = source
-                            .char_indices()
-                            .nth(start_char)
-                            .map_or(source.len(), |(i, _)| i);
-                        let sliced_source = &source[start_byte..];
-                        let sliced_source_char_count = sliced_source.chars().count();
-
-                        let new_length = if max_length == 0 {
-                            sliced_source_char_count
-                        } else if max_length.is_negative() {
-                            usize::try_from(sliced_source_char_count as i32 + max_length)
-                                .unwrap_or_default()
-                        } else {
-                            usize::try_from(max_length).unwrap_or_default()
-                        };
-
-                        let end_byte = sliced_source
-                            .char_indices()
-                            .nth(new_length)
-                            .map_or(sliced_source.len(), |(i, _)| i);
-
-                        let range = start_byte..(start_byte + end_byte);
-
-                        result = match result {
-                            Cow::Borrowed(b) => Cow::Borrowed(&b[range]),
-                            Cow::Owned(mut o) => {
-                                o.truncate(range.end);
-                                o.drain(..range.start);
-                                Cow::Owned(o)
-                            }
-                        };
-                    }
+                // NSIS Unicode string offsets and lengths count UTF-16 code
+                // units, including both halves of supplementary characters.
+                let units: Vec<_> = source.encode_utf16().collect();
+                let count = units.len() as i32;
+                let start = if start_position < 0 {
+                    count.saturating_add(start_position)
+                } else {
+                    start_position
                 }
+                .clamp(0, count) as usize;
+                let remaining = (units.len() - start) as i32;
+                let length = match max_length.cmp(&0) {
+                    Ordering::Equal => remaining,
+                    Ordering::Less => remaining.saturating_add(max_length).max(0),
+                    Ordering::Greater => max_length.min(remaining),
+                } as usize;
+                let result =
+                    String::from_utf16(&units[start..start + length]).unwrap_or_else(|_| {
+                        warn!("StrCpy split a Unicode surrogate pair");
+                        String::from_utf16_lossy(&units[start..start + length])
+                    });
 
                 match (max_length, start_position) {
                     (0, 0) => debug!(r#"StrCpy ${index} "{source}" # = "{result}""#),
@@ -830,11 +807,7 @@ impl Entry {
                     }
                 }
 
-                if result.is_empty() {
-                    state.variables.remove(&index);
-                } else {
-                    state.variables.insert(index, result);
-                }
+                state.variables.insert(index, result);
             }
             Self::StrCmp {
                 str_1,
