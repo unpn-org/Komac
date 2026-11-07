@@ -1,3 +1,4 @@
+mod codepage;
 mod entry;
 mod error;
 mod file_data;
