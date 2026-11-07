@@ -12,7 +12,7 @@ mod strings;
 mod variables;
 mod version;
 
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 
 use camino::Utf8Path;
 pub use error::NsisError;
@@ -63,41 +63,58 @@ pub struct Nsis {
 impl Nsis {
     pub fn new<R: Read + Seek>(mut reader: R, pe: &PE) -> Result<Self, NsisError> {
         let manifest = pe.manifest(&mut reader).ok();
-
         let finder = FirstHeaderFinder::find(&mut reader, pe)?;
-
-        debug!(?finder);
+        let first_header = finder.first_header();
+        let indexed = first_header.is_nsisbi()
+            && header::indexed::probe(&mut reader, first_header.length_of_header())?;
+        let data_offset = finder.data_offset()
+            + if indexed {
+                4
+            } else if first_header.is_nsisbi() {
+                8
+            } else {
+                0
+            };
+        reader.seek(SeekFrom::Start(data_offset))?;
+        debug!(?finder, data_offset);
 
         let Decompressed {
             data: decompressed_data,
             is_solid,
             non_solid_start_offset,
+            record_width,
             compression,
             decoder,
         } = Header::decompress(&mut reader, finder.first_header())?;
 
         let architecture = pe.winget_architecture();
 
-        let header = Header::read_from(&decompressed_data, architecture.is_64_bit())?;
+        let header = if indexed {
+            Header::read_indexed(&decompressed_data)?
+        } else {
+            Header::read_from(&decompressed_data, architecture.is_64_bit())?
+        };
 
         debug!(?header);
 
         let mut file_data = file_data::FileData::new(
             decoder.into_inner(),
-            finder.data_offset(),
-            finder.first_header().length_of_header(),
+            data_offset,
+            first_header.length_of_header(),
             is_solid,
             non_solid_start_offset,
             compression,
-        );
+        )
+        .with_record_width(record_width)
+        .with_indexed_files(header.indexed_files().map(<[_]>::to_vec));
         let mut read_file = |position| file_data.read(position);
         let mut state = NsisState::new(
             &decompressed_data,
             &header,
             manifest.as_deref(),
             &mut read_file,
+            first_header.is_nsisbi(),
         )?;
-
         state.exec_flags[entry::ExecFlag::RegView] =
             zerocopy::I32::new(if architecture.is_64_bit() {
                 0x100
