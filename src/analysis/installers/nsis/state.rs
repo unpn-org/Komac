@@ -4,7 +4,7 @@ use std::{
     io::{self, Cursor},
 };
 
-use encoding_rs::{UTF_16LE, WINDOWS_1252};
+use encoding_rs::UTF_16LE;
 use itertools::Either;
 use tracing::{debug, debug_span};
 use zerocopy::{FromBytes, I32, LE, U16};
@@ -222,7 +222,7 @@ impl<'data> NsisState<'data> {
             let value = if unicode {
                 UTF_16LE.decode_without_bom_handling(string_bytes).0
             } else {
-                WINDOWS_1252.decode_without_bom_handling(string_bytes).0
+                super::codepage::decode(string_bytes)
             };
             return bound_string(value);
         }
@@ -239,7 +239,7 @@ impl<'data> NsisState<'data> {
                 buf.push_bounded(&String::from_utf16_lossy(literal));
             } else {
                 let bytes: Vec<u8> = literal.iter().map(|&unit| unit as u8).collect();
-                buf.push_bounded(&WINDOWS_1252.decode_without_bom_handling(&bytes).0);
+                buf.push_bounded(&super::codepage::decode(&bytes));
             }
             literal.clear();
         };
