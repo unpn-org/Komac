@@ -1,14 +1,13 @@
 use std::io::{Read, Result, Seek};
 
-use flate2::read::ZlibDecoder;
 use lzma_rust2::LzmaReader;
 
-use super::{LzmaStreamHeader, nsis_bzip2};
+use super::{LzmaStreamHeader, nsis_bzip2, nsis_deflate};
 
 pub enum Decoder<R: Read + Seek> {
     Lzma(Box<LzmaReader<R>>),
     NsisBZip2(nsis_bzip2::Decoder<R>),
-    Zlib(ZlibDecoder<R>),
+    Zlib(nsis_deflate::Decoder<R>),
     None(R),
 }
 
