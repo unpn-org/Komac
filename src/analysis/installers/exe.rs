@@ -161,9 +161,9 @@ impl Exe {
                     let file_description = table.swap_remove(FILE_DESCRIPTION);
 
                     BASIC_INSTALLER_KEYWORDS.iter().any(|keyword| {
-                        original_filename.is_some_and(|filename| filename.contains(keyword))
+                        original_filename.is_some_and(|filename| filename.to_ascii_lowercase().contains(keyword))
                             || file_description
-                                .is_some_and(|description| description.contains(keyword))
+                                .is_some_and(|description| description.to_ascii_lowercase().contains(keyword))
                     })
                 }) {
                     Some(InstallerType::Exe)
