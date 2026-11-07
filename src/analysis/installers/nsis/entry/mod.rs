@@ -9,7 +9,10 @@ mod show_window;
 pub mod system;
 mod window_message;
 
-use std::cmp::{Ordering, max};
+use std::{
+    borrow::Cow,
+    cmp::{Ordering, max},
+};
 
 use compact_str::ToCompactString;
 use creation_disposition::CreationDisposition;
@@ -474,7 +477,9 @@ impl Entry {
                 debug!("DetailPrint: {}", state.get_string(update_str.get()));
             }
             Self::Sleep { time_ms } => {
-                debug!("Sleep: {}", max(state.get_int(time_ms.get()), 1));
+                let milliseconds = max(state.get_int(time_ms.get()), 1);
+                state.mock_caller.advance_time(milliseconds as u64);
+                debug!("Sleep: {milliseconds}");
             }
             Self::BringToFront => {
                 debug!("BringToFront");
@@ -1218,27 +1223,47 @@ impl Entry {
             } => {
                 // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L4398
 
-                let dll_file_name = state.get_string(dll_file_name.get());
-                let function = state.get_string(function.get());
+                let dll_file_name = state.get_string(dll_file_name.get()).into_string_lossy();
+                let function = state.get_string(function.get()).into_string_lossy();
 
+                let mut stack = state
+                    .stack
+                    .iter()
+                    .map(|value| Cow::Owned(value.to_string_lossy().into_owned()))
+                    .collect();
                 if *display_text == I32::ZERO {
-                    if dll_file_name.as_nsis_str().ends_with("System.dll")
-                        && function == "Call"
-                        && let Some(call) = state.stack.pop()
+                    if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("System.dll"))
                     {
-                        state.mock_caller.call(&call.to_string_lossy());
+                        state.mock_caller.invoke(
+                            &function,
+                            &mut system::Context {
+                                variables: &mut state.variables,
+                                stack: &mut stack,
+                                flags: &mut state.exec_flags,
+                                registry: &mut state.registry,
+                                files: &mut state.file_system,
+                            },
+                        );
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
                         // can continue past prerequisite bootstrapper steps.
-                        while state.stack.last().is_some_and(|arg| arg.as_nsis_str().starts_with("/")) {
-                            state.stack.pop();
+                        while stack.last().is_some_and(|arg| arg.starts_with("/")) {
+                            stack.pop();
                         }
-                        if state.stack.len() >= 2 {
-                            state.stack.pop();
-                            state.stack.pop();
+                        if stack.len() >= 2 {
+                            stack.pop();
+                            stack.pop();
                         }
-                        state.stack.push(super::strings::NsisString::from_str("success", state.is_unicode()).into());
+                        stack.push(Cow::Borrowed("success"));
+                        warn!(
+                            "NSISdl download success is assumed; external prerequisites were not downloaded or executed"
+                        );
+                    } else {
+                        warn!(%dll_file_name, %function, "Unmodeled installer plugin; subsequent state requires independent validation");
                     }
                     debug!(
                         "CallInstDLL: {dll_file_name} {function}{}",
@@ -1258,6 +1283,20 @@ impl Entry {
                         }
                     );
                 }
+                state.stack = stack
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value): (_, Cow<'_, str>)| {
+                        // Preserve unchanged native values, including unpaired UTF-16 units.
+                        if let Some(original) = state.stack.get(index)
+                            && original.to_string_lossy() == value
+                        {
+                            original.clone()
+                        } else {
+                            state.encode(&value).into()
+                        }
+                    })
+                    .collect();
             }
             Self::CreateShortcut {
                 link_file,
