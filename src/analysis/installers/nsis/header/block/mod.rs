@@ -228,6 +228,102 @@ impl BlockHeaders {
         Ok((entries, positions))
     }
 
+    /// Park moved Unicode and font opcodes into the middle of the instruction table.
+    /// Try the documented layouts and validate every resulting instruction.
+    pub fn park_entries<'data>(
+        &self,
+        data: &'data [u8],
+        unicode: bool,
+    ) -> Result<Cow<'data, [Entry]>, NsisError> {
+        let raw = self.entries_block(data);
+        for fonts in 0..=2 {
+            for log in [false, true] {
+                let mut entries = Vec::new();
+                for bytes in raw.as_chunks::<{ size_of::<Entry>() }>().0 {
+                    let mut bytes = *bytes;
+                    let mut opcode = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+                    if opcode >= 44 {
+                        if fonts >= 1 {
+                            if opcode == 44 {
+                                opcode = 72;
+                            } else {
+                                opcode -= 1;
+                            }
+                        }
+                        if fonts >= 2 && opcode != 72 {
+                            if opcode == 44 {
+                                opcode = 73;
+                            } else {
+                                opcode -= 1;
+                            }
+                        }
+                        if (58..72).contains(&opcode) {
+                            if unicode {
+                                if opcode == 58 {
+                                    opcode = 68;
+                                } else if opcode == 59 {
+                                    opcode = 69;
+                                } else {
+                                    opcode -= 2;
+                                }
+                            }
+                            if (63..68).contains(&opcode) && log {
+                                if opcode == 63 {
+                                    opcode = 70;
+                                } else {
+                                    opcode -= 1;
+                                }
+                            }
+                            if opcode == 68 && !unicode {
+                                opcode = 71;
+                            }
+                        }
+                    }
+                    // Enum validation alone accepts another instruction's operands as
+                    // padding. Park inserts opcodes in the middle of the table, so a
+                    // wrong layout can otherwise turn WriteUninstaller into Reboot.
+                    const PARAM_COUNTS: [usize; 30] = [
+                        6, 6, 4, 1, 5, 4, 5, 6, 5, 5, 1, 4, 3, 4, 4, 1, 2, 3, 4, 5, 4, 6, 2, 1, 4,
+                        4, 2, 2, 2, 2,
+                    ];
+                    if let Some(&count) = opcode
+                        .checked_sub(44)
+                        .and_then(|index| PARAM_COUNTS.get(index as usize))
+                        && bytes[4 + count * 4..].iter().any(|&byte| byte != 0)
+                    {
+                        break;
+                    }
+                    bytes[..4].copy_from_slice(&opcode.to_le_bytes());
+                    match Entry::try_read_from_bytes(&bytes) {
+                        Ok(entry) => {
+                            let valid = match entry {
+                                Entry::ReadReg { root, .. }
+                                | Entry::WriteReg { root, .. }
+                                | Entry::DeleteReg { root, .. } => root.is_script_root(),
+                                Entry::RegEnumKey { root_key, .. } => root_key.is_script_root(),
+                                Entry::Reboot(magic) => magic.get() == 0x0bad_f00d,
+                                // These slots were compiler-only address operations in Park.
+                                Entry::GetOSInfo { .. } | Entry::ReservedOPCode => false,
+                                _ => true,
+                            };
+                            if !valid {
+                                break;
+                            }
+                            entries.push(entry);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if entries.len() * size_of::<Entry>() == raw.len() {
+                    return Ok(Cow::Owned(entries));
+                }
+            }
+        }
+        Err(NsisError::ZeroCopy(
+            "Unsupported NSIS Park instruction layout".to_owned(),
+        ))
+    }
+
     /// Returns the strings block.
     pub fn strings_block<'data>(&self, data: &'data [u8]) -> &'data [u8] {
         self.get(data, BlockType::Strings)
@@ -329,6 +425,40 @@ impl<'a> IntoIterator for &'a mut BlockHeaders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn park_layouts_do_not_accept_other_instructions_as_padding() {
+        for fonts in 0..=2u32 {
+            for unicode in [false, true] {
+                for log in [false, true] {
+                    let shifted = fonts + if unicode { 2 } else { 0 };
+                    let words = [
+                        [44 + fonts, 10, 20, 0, 0, 0, 0],
+                        [45 + fonts, 30, 40, 0, 0, 0, 0],
+                        [51 + fonts, 0x80000002, 100, 200, 300, 1, 0],
+                        [62 + shifted, 11, 123, 9, 10, 0, 0],
+                        [63 + shifted + u32::from(log), 0, 0, 0, 1, 7, 0],
+                    ];
+                    let data: Vec<_> = words
+                        .into_iter()
+                        .flatten()
+                        .flat_map(u32::to_le_bytes)
+                        .collect();
+                    let mut blocks = BlockHeaders::default();
+                    blocks.0[BlockType::Strings as usize].offset = U64::new(data.len() as u64);
+                    let entries = blocks.park_entries(&data, unicode).unwrap();
+                    assert!(
+                        matches!(entries[0], Entry::RegisterDLL { .. }),
+                        "fonts={fonts}, unicode={unicode}, log={log}: {entries:?}"
+                    );
+                    assert!(matches!(entries[1], Entry::CreateShortcut { .. }));
+                    assert!(matches!(entries[2], Entry::WriteReg { .. }));
+                    assert!(matches!(entries[3], Entry::WriteUninstaller { .. }));
+                    assert!(matches!(entries[4], Entry::SectionSet { .. }));
+                }
+            }
+        }
+    }
 
     #[test]
     fn decodes_bi_instruction_width_and_full_file_offsets() {
