@@ -2,6 +2,7 @@ mod creation_disposition;
 mod del_flags;
 mod exec_flag;
 mod generic_access_rights;
+mod lang_dialog;
 mod message_box;
 mod push_pop;
 mod seek_from;
@@ -1232,6 +1233,15 @@ impl Entry {
                         // Simulate an administrative installation and report that assumption.
                         state.stack.push(Cow::Borrowed("Admin"));
                         warn!(%function, "UserInfo uses a simulated administrator account; account-dependent metadata requires independent validation");
+                    } else if dll_file_name.ends_with("LangDLL.dll")
+                        && function == "LangDialog"
+                        && lang_dialog::select(&mut state.stack, state.language_table.id())
+                            .is_some()
+                    {
+                        warn!(
+                            language = state.language_table.id(),
+                            "LangDLL selects the primary installer language; language-dependent metadata requires independent validation"
+                        );
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
