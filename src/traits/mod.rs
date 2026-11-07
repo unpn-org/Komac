@@ -36,11 +36,21 @@ use crate::analysis::installers::pe::PE;
 
 pub trait FromMachine {
     fn from_machine(machine: u16) -> Self;
+    fn try_from_machine(machine: u16) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl FromMachine for Architecture {
     fn from_machine(machine: u16) -> Self {
-        match machine {
+        Self::try_from_machine(machine).unwrap_or_else(|| {
+            warn!("Unrecognised PE machine type {machine:#06X}, treating it as neutral");
+            Self::Neutral
+        })
+    }
+
+    fn try_from_machine(machine: u16) -> Option<Self> {
+        Some(match machine {
             IMAGE_FILE_MACHINE_AMD64
             | IMAGE_FILE_MACHINE_IA64
             | IMAGE_FILE_MACHINE_POWERPC
@@ -60,13 +70,8 @@ impl FromMachine for Architecture {
                 Self::Arm
             }
             IMAGE_FILE_MACHINE_UNKNOWN => Self::Neutral,
-            _ => {
-                // Unrecognised machine types (e.g. RISC-V, LoongArch, EFI byte code) come from
-                // untrusted installer headers, so they must not abort analysis.
-                warn!("Unrecognised PE machine type {machine:#06X}, treating it as neutral");
-                Self::Neutral
-            }
-        }
+            _ => return None,
+        })
     }
 }
 
@@ -307,6 +312,17 @@ impl LocaleExt for DefaultLocaleManifest {
         });
         self.manifest_type = Self::TYPE;
         self.update_manifest_version();
+    }
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_machine_does_not_panic_or_infer_embedded_architecture() {
+        assert_eq!(Architecture::try_from_machine(52048), None);
+        assert_eq!(Architecture::from_machine(52048), Architecture::Neutral);
     }
 }
 
