@@ -36,6 +36,7 @@ pub struct NsisState<'data> {
     pub last_used_exec_flags: ExecFlags,
     pub status_up_hack: I32<LE>,
     pub mock_caller: MockCaller,
+    pub section_flags: Vec<i32>,
     version: NsisVersion,
     string_version: NsisVersion,
     file_positions: Vec<Option<u64>>,
@@ -64,6 +65,11 @@ impl<'data> NsisState<'data> {
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
+            section_flags: header
+                .blocks()
+                .sections(data)
+                .map(|section| section.flags())
+                .collect(),
             version: NsisVersion::default(),
             string_version: NsisVersion::default(),
             file_positions: Vec::new(),
@@ -478,6 +484,7 @@ mod tests {
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
+            section_flags: Vec::new(),
             version: NsisVersion::v3(),
             string_version: NsisVersion::v3(),
             file_positions: Vec::new(),

@@ -1646,24 +1646,30 @@ impl Entry {
                 call_section_set_flags: _call_section_set_flags,
                 output_2,
             } => {
-                const SECTION_NAMES: [&str; 6] =
-                    ["Text", "InstTypes", "Flags", "Code", "CodeSize", "Size"];
-
-                let index = state.get_int(index.get());
-                if let Ok(r#type) = u32::try_from(r#type.get()) {
-                    debug!(
-                        "SectionGet{}: {index} {output}",
-                        SECTION_NAMES[r#type as usize]
-                    );
-                } else {
-                    let r#type = r#type.get().unsigned_abs() - 1;
-                    debug!(
-                        "SectionSet{}: {index} {}",
-                        SECTION_NAMES[r#type as usize],
-                        state.get_int(if r#type == 0 { output_2 } else { output }.get())
-                    );
+                let index = state.get_int(index.get()) as usize;
+                let Some(flags) = state.section_flags.get(index).copied() else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    return Ok(0);
+                };
+                // Flags occupy field 2 in NSIS's section struct; setters encode -(field+1).
+                match r#type.get() {
+                    2 => {
+                        state
+                            .variables
+                            .insert(output.get() as usize, flags.to_string());
+                    }
+                    -3 => {
+                        state.section_flags[index] = state.get_int(output.get());
+                    }
+                    _ => {
+                        debug!(
+                            "SectionSet: {index} {output} {type_} {output_2}",
+                            type_ = r#type.get()
+                        );
+                    }
                 }
             }
+
             Self::InstallerTypeSet { index } => {
                 debug!("InstallerTypeSet: {index}");
             }
