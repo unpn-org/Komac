@@ -23,16 +23,17 @@ use push_pop::PushPop;
 use seek_from::SeekFrom;
 use show_window::ShowWindow;
 use thiserror::Error;
-use tracing::debug;
-use typed_path::Utf8WindowsPath;
+use tracing::{debug, warn};
+use typed_path::{Utf8Component, Utf8WindowsComponent, Utf8WindowsPath};
 use window_message::WindowMessage;
 use zerocopy::{I32, Immutable, KnownLayout, LE, TryFromBytes, U64};
 
 use super::{
+    Variables,
     file_system::RelativeLocation,
     registry::{RegRoot, RegType},
     state::NsisState,
-    strings::NsisCow,
+    strings::{NsisCow, PredefinedVar},
 };
 use crate::analysis::installers::pe::{PE, VSVersionInfo};
 
@@ -120,8 +121,8 @@ pub enum Entry {
         reboot_ok: I32<LE>,
     } = 16u32.to_le(),
     GetFullPathname {
-        output: I32<LE>,
         input: I32<LE>,
+        output: I32<LE>,
         long_or_short_file_name: I32<LE>,
     } = 17u32.to_le(),
     SearchPath {
@@ -365,9 +366,9 @@ pub enum Entry {
         handle: I32<LE>,
     } = 60u32.to_le(),
     FindFirst {
-        file_spec: I32<LE>,
         output: I32<LE>,
         handle_output: I32<LE>,
+        file_spec: I32<LE>,
     } = 61u32.to_le(),
     WriteUninstaller {
         name: I32<LE>,
@@ -492,6 +493,10 @@ impl Entry {
                     state
                         .file_system
                         .set_directory(&*path.to_string_lossy(), RelativeLocation::Root);
+                    state.variables.insert(
+                        Variables::NUM_REGISTERS + PredefinedVar::OutDir as usize,
+                        path,
+                    );
                 }
             }
             Self::IfFileExists {
@@ -618,21 +623,46 @@ impl Entry {
                 input,
                 long_or_short_file_name,
             } => {
-                // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L3986
-
-                debug!(
-                    "GetFullPathName: {}{} {}",
-                    if *long_or_short_file_name == I32::ZERO {
-                        "/SHORT "
-                    } else {
-                        ""
-                    },
+                // exec.c uses parm0 for the input string and var1 for output.
+                let input = state.get_string(input.get()).into_string_lossy();
+                let path = Utf8WindowsPath::new(&input);
+                let symbolic_root = path.components().next().is_some_and(|part| {
+                    let part = part.as_str();
+                    (part.starts_with('%') && part.ends_with('%')) || part.starts_with('$')
+                });
+                let result = if input.is_empty() || *long_or_short_file_name == I32::ZERO {
+                    warn!(%input, "Cannot resolve empty or short Windows path during static analysis");
+                    None
+                } else if path.is_absolute() || symbolic_root {
+                    Some(path.normalize())
+                } else if !path.has_root()
+                    && !matches!(
+                        path.components().next(),
+                        Some(Utf8WindowsComponent::Prefix(_))
+                    )
+                {
+                    let base = state
+                        .variables
+                        .get(&(Variables::NUM_REGISTERS + PredefinedVar::OutDir as usize))
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "$EXEDIR".to_owned());
+                    Some(Utf8WindowsPath::new(&base).join(path).normalize())
+                } else {
+                    warn!(%input, "Windows drive context is unavailable during static analysis");
+                    None
+                };
+                if let Some(result) = result {
+                    if !state.file_system.exists(&*input, RelativeLocation::Current) {
+                        warn!(%input, "GetFullPathName requires validation of the external Windows filesystem");
+                    }
+                    debug!("GetFullPathName: {input} -> {result}");
                     state
                         .variables
-                        .get(&(input.get() as usize))
-                        .unwrap_or_default(),
-                    state.get_string(output.get())
-                );
+                        .insert(output.get() as usize, result.into_string());
+                } else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    state.variables.insert(output.get() as usize, "");
+                }
             }
             Self::SearchPath { output, filename } => {
                 debug!(
@@ -682,7 +712,9 @@ impl Entry {
             Self::DeleteFile { filename, flags } => {
                 let filename = state.get_string(filename.get());
                 debug!(r#"Delete: "{filename}""#);
-                state.file_system.delete(filename.to_string_lossy(), *flags);
+                if !state.file_system.delete(filename.to_string_lossy(), *flags) {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
             }
             Self::MessageBox { mb_flags, text } => {
                 let text = state.get_string(text.get());
@@ -698,7 +730,14 @@ impl Entry {
                         ""
                     },
                 );
-                state.file_system.delete(path.to_string_lossy(), *flags);
+                let existed = state
+                    .file_system
+                    .exists(&*path.to_string_lossy(), RelativeLocation::Root);
+                if !state.file_system.delete(&*path.to_string_lossy(), *flags)
+                    && (existed || path.is_empty())
+                {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
             }
             Self::StrLen { output, input } => {
                 let input = state.get_string(input.get());
@@ -1500,26 +1539,53 @@ impl Entry {
                 );
             }
             Self::FindClose { handle } => {
+                let handle = state
+                    .variables
+                    .get(&(handle.get() as usize))
+                    .and_then(|value| value.parse_int(10))
+                    .unwrap_or_default();
+                state.find_handles.remove(&handle);
                 debug!("FindClose: {handle}");
             }
             Self::FindNext { output, handle } => {
-                let output = state
-                    .variables
-                    .get(&(output.get() as usize))
-                    .unwrap_or_default();
                 let handle = state
                     .variables
                     .get(&(handle.get() as usize))
                     .and_then(|handle| handle.parse_int(10))
                     .unwrap_or_default();
-                debug!("FindNext: {output} {handle}");
+                let name = state
+                    .find_handles
+                    .get_mut(&handle)
+                    .and_then(std::collections::VecDeque::pop_front);
+                if name.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                debug!("FindNext: {handle} -> {name:?}");
+                state
+                    .variables
+                    .insert(output.get() as usize, name.unwrap_or_default());
             }
             Self::FindFirst {
                 file_spec,
                 output,
                 handle_output,
             } => {
-                debug!("FindFirst: {file_spec} {output} {handle_output}");
+                let spec = state.get_string(file_spec.get()).into_string_lossy();
+                let mut names: std::collections::VecDeque<_> = state.file_system.find(&spec).into();
+                let first = names.pop_front();
+                let handle = if first.is_some() {
+                    let handle = state.find_handles.keys().copied().max().unwrap_or_default() + 1;
+                    state.find_handles.insert(handle, names);
+                    handle.to_string()
+                } else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    String::new()
+                };
+                debug!("FindFirst: {spec} -> {first:?}");
+                state
+                    .variables
+                    .insert(output.get() as usize, first.unwrap_or_default());
+                state.variables.insert(handle_output.get() as usize, handle);
             }
             Self::WriteUninstaller {
                 name,
