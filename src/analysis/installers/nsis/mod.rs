@@ -6,6 +6,7 @@ mod file_system;
 mod first_header;
 mod header;
 mod ini;
+mod int_fmt;
 mod language;
 mod registry;
 mod section;
