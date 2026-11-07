@@ -3,6 +3,7 @@ mod compression;
 mod decoder;
 pub mod flags;
 pub(super) mod nsis_bzip2;
+pub(super) mod nsis_deflate;
 
 use std::{
     fmt, io,
@@ -11,7 +12,6 @@ use std::{
 
 pub use compression::Compression;
 pub use decoder::Decoder;
-use flate2::{Decompress, read::ZlibDecoder};
 use tracing::debug;
 use zerocopy::{FromBytes, I32, LE};
 
@@ -257,10 +257,7 @@ impl Header {
                 (!is_solid).then_some(compressed_header_size as usize),
                 expected_size + if is_solid { size_of::<u32>() } else { 0 },
             )?),
-            Compression::Zlib => Decoder::Zlib(ZlibDecoder::new_with_decompress(
-                reader,
-                Decompress::new(false),
-            )),
+            Compression::Zlib => Decoder::Zlib(nsis_deflate::Decoder::new(reader)),
             Compression::None => Decoder::None(reader),
         };
 

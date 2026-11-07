@@ -1,9 +1,8 @@
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
-use flate2::{Decompress, read::ZlibDecoder};
 use zerocopy::LE;
 
-use super::header::{Compression, Decoder, nsis_bzip2};
+use super::header::{Compression, Decoder, nsis_bzip2, nsis_deflate};
 use crate::{analysis::installers::utils::LzmaStreamHeader, read::ReadBytesExt};
 
 /// Reads embedded files using the offsets recorded by ExtractFile.
@@ -60,10 +59,7 @@ impl<R: Read + Seek> FileData<R> {
                 let header = self.reader.read_t::<LzmaStreamHeader>()?;
                 Decoder::new_lzma1(&mut self.reader, header)?
             }
-            Compression::Zlib => Decoder::Zlib(ZlibDecoder::new_with_decompress(
-                &mut self.reader,
-                Decompress::new(false),
-            )),
+            Compression::Zlib => Decoder::Zlib(nsis_deflate::Decoder::new(&mut self.reader)),
             Compression::BZip2 => Decoder::NsisBZip2(nsis_bzip2::Decoder::new(
                 &mut self.reader,
                 compressed_size,
