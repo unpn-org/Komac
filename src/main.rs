@@ -42,6 +42,14 @@ async fn main() -> Result<()> {
 
 fn setup_logging() {
     let indicatif_layer = IndicatifLayer::new();
+    let targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|directives| directives.parse::<filter::Targets>().ok())
+        .unwrap_or_else(|| {
+            filter::Targets::new()
+                .with_default(LevelFilter::INFO)
+                .with_target(crate_name!(), Level::TRACE)
+        });
 
     tracing_subscriber::registry()
         .with(
@@ -51,11 +59,7 @@ fn setup_logging() {
                 .without_time(),
         )
         .with(indicatif_layer)
-        .with(
-            filter::Targets::new()
-                .with_default(LevelFilter::INFO)
-                .with_target(crate_name!(), Level::TRACE),
-        )
+        .with(targets)
         .init();
 }
 
