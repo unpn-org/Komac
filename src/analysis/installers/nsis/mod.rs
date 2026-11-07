@@ -2,6 +2,7 @@ mod codepage;
 mod entry;
 mod error;
 mod file_data;
+mod file_io;
 mod file_system;
 mod first_header;
 mod header;
