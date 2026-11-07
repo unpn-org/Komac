@@ -444,7 +444,10 @@ impl Entry {
                 debug!("Quit");
             }
             Self::Call { address } => {
-                let resolved_address = state.resolve_address(address.get()) - 1;
+                let resolved_address = state
+                    .resolve_address(address.get())?
+                    .checked_sub(1)
+                    .ok_or(EntryError::Invalid)?;
                 debug!("Call {resolved_address}");
                 state.execute_code_segment(resolved_address)?;
             }
@@ -504,13 +507,13 @@ impl Entry {
                 {
                     debug!(
                         r#"IfFileExists: jumping to {if_exists} as "{file_name}" exists"#,
-                        if_exists = state.resolve_address(jump_amount_if_exists.get()),
+                        if_exists = jump_amount_if_exists.get(),
                     );
                     Ok(jump_amount_if_exists.get())
                 } else {
                     debug!(
                         r#"IfFileExists: jumping to {if_not_exists} as "{file_name}" does NOT exist"#,
-                        if_not_exists = state.resolve_address(jump_amount_if_not_exists.get()),
+                        if_not_exists = jump_amount_if_not_exists.get(),
                     );
                     Ok(jump_amount_if_not_exists.get())
                 };
@@ -832,26 +835,24 @@ impl Entry {
                 val1_gt_val2,
                 flags,
             } => {
-                let signed = *flags == I32::ZERO;
+                let signed = flags.get() & 0xff == 0;
                 let is_64_bit = (*flags & I32::new(0x8000)) != 0;
 
-                let val_1 = state.get_int(val_1.get());
-                let val_2 = state.get_int(val_2.get());
+                let val_1 = state.get_int64(val_1.get());
+                let val_2 = state.get_int64(val_2.get());
                 let comparison = match (signed, is_64_bit) {
-                    (true, true) => i64::from(val_1).cmp(&i64::from(val_2)),
-                    (true, false) => val_1.cmp(&val_2),
-                    (false, true) => {
-                        u64::from(val_1.cast_unsigned()).cmp(&u64::from(val_2.cast_unsigned()))
-                    }
-                    (false, false) => val_1.cast_unsigned().cmp(&val_2.cast_unsigned()),
+                    (true, true) => val_1.cmp(&val_2),
+                    (true, false) => (val_1 as i32).cmp(&(val_2 as i32)),
+                    (false, true) => (val_1 as u64).cmp(&(val_2 as u64)),
+                    (false, false) => (val_1 as u32).cmp(&(val_2 as u32)),
                 };
 
                 debug!(
                     "IntCmp{}: {val_1} {val_2} eq: {} lt: {} gt: {}",
                     if is_64_bit { "64" } else { "" },
-                    state.resolve_address(equal.get()),
-                    state.resolve_address(val1_lt_val2.get()),
-                    state.resolve_address(val1_gt_val2.get())
+                    equal.get(),
+                    val1_lt_val2.get(),
+                    val1_gt_val2.get()
                 );
 
                 return match comparison {
@@ -883,7 +884,7 @@ impl Entry {
                     4 => input1 | input2,
                     5 => input1 & input2,
                     6 => input1 ^ input2,
-                    7 => !input1,
+                    7 => i32::from(input1 == 0),
                     8 => i32::from(input1 != 0 || input2 != 0),
                     9 => i32::from(input1 != 0 && input2 != 0),
                     10 => input1.checked_rem(input2).unwrap_or_default(),
@@ -895,6 +896,9 @@ impl Entry {
                         .cast_signed(),
                     _ => input1,
                 };
+                if matches!(operation.get(), 3 | 10) && input2 == 0 {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
 
                 debug!(
                     "IntOp: {input1} {sign} {input2} = {result}",
