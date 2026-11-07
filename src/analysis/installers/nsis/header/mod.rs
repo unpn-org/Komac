@@ -2,8 +2,11 @@ pub mod block;
 mod compression;
 mod decoder;
 pub mod flags;
+pub(super) mod indexed;
+pub(super) mod lzma2;
 pub(super) mod nsis_bzip2;
 pub(super) mod nsis_deflate;
+pub(super) mod threaded_lzma;
 
 use std::{
     fmt, io,
@@ -33,6 +36,7 @@ const NSIS_MAX_INST_TYPES: u8 = 32;
 #[derive(Clone)]
 #[repr(C)]
 pub struct Header {
+    indexed_files: Option<Vec<indexed::FileRecord>>,
     common_header_flags: CommonHeaderFlags,
     blocks: BlockHeaders,
 
@@ -113,7 +117,8 @@ pub struct Header {
 pub struct Decompressed<R: Read + Seek> {
     pub data: Vec<u8>,
     pub is_solid: bool,
-    pub non_solid_start_offset: u32,
+    pub non_solid_start_offset: u64,
+    pub record_width: usize,
     pub compression: Compression,
     pub decoder: Decoder<R>,
 }
@@ -140,17 +145,38 @@ fn is_bzip2(data: &[u8]) -> bool {
     data.first() == Some(&BZIP2_MAGIC) && data.get(1) < Some(&14)
 }
 
-const HEADER_SIGNATURE_SIZE: usize = 12;
+const HEADER_SIGNATURE_SIZE: usize = 16;
 const NON_SOLID_EXTRA_BYTES: usize = size_of::<u32>();
 const IS_COMPRESSED_MASK: u32 = 1 << 31;
 
 impl Header {
     pub fn read_from(data: &[u8], is_64_bit: bool) -> Result<Self, NsisError> {
+        Self::read_layout(data, is_64_bit, false)
+    }
+
+    pub fn read_indexed(data: &[u8]) -> Result<Self, NsisError> {
+        let header = Self::read_layout(data, false, true)?;
+        if header.blocks[BlockType::Pages].offset() != 308 {
+            return Err(io::Error::from(io::ErrorKind::InvalidData).into());
+        }
+        header.blocks.indexed_entries(data)?;
+        Ok(header)
+    }
+
+    fn read_layout(data: &[u8], is_64_bit: bool, indexed: bool) -> Result<Self, NsisError> {
         let (common_header_flags, rest) = CommonHeaderFlags::read_from_prefix(data)?;
 
         let (blocks, mut rest) = BlockHeaders::read_dynamic_from_prefix(rest, is_64_bit)?;
+        let indexed_files = if indexed {
+            let offset = rest.read_t::<zerocopy::U32<LE>>()?.get();
+            let count = rest.read_t::<zerocopy::U32<LE>>()?.get();
+            Some(indexed::file_records(data, offset, count)?)
+        } else {
+            None
+        };
 
         Ok(Self {
+            indexed_files,
             common_header_flags,
             blocks,
             install_registry_root_key: rest.read_t()?,
@@ -211,59 +237,91 @@ impl Header {
         let mut signature = [0; HEADER_SIGNATURE_SIZE];
         reader.read_exact(&mut signature)?;
 
-        let mut compressed_header_size =
-            u32::from_le_bytes(signature[..size_of::<u32>()].try_into().unwrap());
-        let mut is_solid = true;
-
-        debug!(?signature);
-
-        let compression = if compressed_header_size == first_header.length_of_header() {
-            is_solid = false;
-            Compression::None
-        } else if let Some(lzma_compression) = is_lzma(&signature) {
-            lzma_compression
-        } else if signature.get(3) == Some(&0x80) {
-            is_solid = false;
-            is_lzma(&signature[NON_SOLID_EXTRA_BYTES..]).unwrap_or_else(|| {
-                if is_bzip2(&signature[NON_SOLID_EXTRA_BYTES..]) {
-                    Compression::BZip2
-                } else {
-                    Compression::Zlib
-                }
-            })
-        } else if is_bzip2(&signature) {
-            Compression::BZip2
-        } else {
-            Compression::Zlib
+        // Older BI installers use four-byte record sizes, newer BI installers eight.
+        let mut record_width = if first_header.is_nsisbi() { 8 } else { 4 };
+        if signature[3] == 0x80 {
+            record_width = 4;
+        }
+        let prefix = |width: usize| {
+            if width == 8 {
+                u64::from_le_bytes(signature[..8].try_into().unwrap())
+            } else {
+                u64::from(u32::from_le_bytes(signature[..4].try_into().unwrap()))
+            }
         };
-
-        if is_solid {
-            reader.seek_relative(-(HEADER_SIGNATURE_SIZE as i64))?;
+        if prefix(4) == u64::from(first_header.length_of_header()) && prefix(8) != prefix(4) {
+            record_width = 4;
+        }
+        let mut compressed_header_size = prefix(record_width);
+        let mask = 1u64 << (record_width * 8 - 1);
+        let mut is_solid = true;
+        let detect = |bytes: &[u8]| {
+            if first_header.is_nsisbi() && bytes.get(3) == Some(&0x5d) {
+                Some(Compression::ThreadedLzma)
+            } else {
+                is_lzma(bytes).or_else(|| is_bzip2(bytes).then_some(Compression::BZip2))
+            }
+        };
+        let mut compression =
+            if compressed_header_size == u64::from(first_header.length_of_header()) {
+                is_solid = false;
+                Compression::None
+            } else if let Some(compression) = detect(&signature) {
+                compression
+            } else if signature[record_width - 1] == 0x80 {
+                is_solid = false;
+                detect(&signature[record_width..]).unwrap_or(Compression::Zlib)
+            } else {
+                Compression::Zlib
+            };
+        let rewind = if is_solid {
+            HEADER_SIGNATURE_SIZE
         } else {
-            reader.seek_relative(-((HEADER_SIGNATURE_SIZE - NON_SOLID_EXTRA_BYTES) as i64))?;
-            compressed_header_size &= !IS_COMPRESSED_MASK;
+            HEADER_SIGNATURE_SIZE - record_width
+        };
+        reader.seek_relative(-(rewind as i64))?;
+        if !is_solid {
+            compressed_header_size &= !mask;
+            if compression == Compression::Zlib
+                && lzma2::probe(
+                    &mut reader,
+                    compressed_header_size,
+                    u64::from(first_header.length_of_header()),
+                )?
+            {
+                compression = Compression::Lzma2;
+            }
         }
 
         debug!(?compression, is_solid, compressed_header_size);
 
         let expected_size = first_header.length_of_header() as usize;
         let mut decoder = match compression {
-            Compression::Lzma(_) => {
+            Compression::Lzma(filter_flag) => {
+                if filter_flag {
+                    reader.seek_relative(1)?;
+                }
                 let header = reader.read_t::<LzmaStreamHeader>()?;
                 Decoder::new_lzma1(reader, header)?
             }
+            Compression::ThreadedLzma => Decoder::ThreadedLzma(threaded_lzma::Decoder::new(reader)),
+            Compression::Lzma2 => Decoder::new_lzma2(reader)?,
             Compression::BZip2 => Decoder::NsisBZip2(nsis_bzip2::Decoder::new(
                 reader,
                 (!is_solid).then_some(compressed_header_size as usize),
-                expected_size + if is_solid { size_of::<u32>() } else { 0 },
+                expected_size + if is_solid { record_width } else { 0 },
             )?),
             Compression::Zlib => Decoder::Zlib(nsis_deflate::Decoder::new(reader)),
             Compression::None => Decoder::None(reader),
         };
 
         if is_solid {
-            let decompressed_header_size = decoder.read_u32::<LE>()?;
-            let expected_size = first_header.length_of_header();
+            let decompressed_header_size = if record_width == 8 {
+                decoder.read_t::<zerocopy::U64<LE>>()?.get()
+            } else {
+                u64::from(decoder.read_u32::<LE>()?)
+            };
+            let expected_size = u64::from(first_header.length_of_header());
             if decompressed_header_size != expected_size {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
@@ -281,6 +339,7 @@ impl Header {
             data: decompressed_data,
             is_solid,
             non_solid_start_offset: compressed_header_size,
+            record_width,
             compression,
             decoder,
         })
@@ -288,6 +347,10 @@ impl Header {
 
     pub const fn blocks(&self) -> &BlockHeaders {
         &self.blocks
+    }
+
+    pub fn indexed_files(&self) -> Option<&[indexed::FileRecord]> {
+        self.indexed_files.as_deref()
     }
 
     #[inline]
