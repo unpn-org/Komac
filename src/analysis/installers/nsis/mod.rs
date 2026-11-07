@@ -119,6 +119,11 @@ impl Nsis {
             &mut read_file,
             first_header.is_nsisbi(),
         )?;
+        state.mock_caller.configure(
+            architecture,
+            state.str_block.starts_with(b"\0\0"),
+            manifest.as_deref(),
+        );
         state.exec_flags[entry::ExecFlag::Silent] =
             zerocopy::I32::new(i32::from(first_header.is_silent()));
 
