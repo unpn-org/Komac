@@ -1,9 +1,10 @@
 use super::super::{
     super::utils::{
         RELATIVE_APP_DATA, RELATIVE_COMMON_FILES_32, RELATIVE_COMMON_FILES_64,
-        RELATIVE_LOCAL_APP_DATA, RELATIVE_PROGRAM_FILES_32, RELATIVE_PROGRAM_FILES_64,
-        RELATIVE_SYSTEM_ROOT, RELATIVE_WINDOWS_DIR,
+        RELATIVE_LOCAL_APP_DATA, RELATIVE_PROGRAM_DATA, RELATIVE_PROGRAM_FILES_32,
+        RELATIVE_PROGRAM_FILES_64, RELATIVE_SYSTEM_ROOT, RELATIVE_WINDOWS_DIR,
     },
+    entry::ExecFlag,
     state::NsisState,
 };
 
@@ -48,7 +49,7 @@ const STRINGS: &[Option<&str>; 62] = &[
     Some("InternetCache"),
     Some("Cookies"),
     Some("History"),
-    Some(RELATIVE_APP_DATA),
+    Some(RELATIVE_PROGRAM_DATA),
     Some(RELATIVE_WINDOWS_DIR),
     Some(RELATIVE_SYSTEM_ROOT),
     Some(RELATIVE_PROGRAM_FILES_64),
@@ -104,10 +105,20 @@ impl Shell {
                     RELATIVE_COMMON_FILES_32
                 });
             }
-        } else if let Some(Some(shell_str)) = STRINGS.get(index1 as usize) {
-            buf.push_str(shell_str);
-        } else if let Some(Some(shell_str)) = STRINGS.get(index2 as usize) {
-            buf.push_str(shell_str);
+        } else {
+            let indices = if state.exec_flags[ExecFlag::ShellVarContext].get() != 0
+                && !matches!(index1, 36 | 37)
+            {
+                [index2, index1]
+            } else {
+                [index1, index2]
+            };
+            if let Some(shell_str) = indices
+                .into_iter()
+                .find_map(|index| STRINGS.get(index as usize).copied().flatten())
+            {
+                buf.push_str(shell_str);
+            }
         }
     }
 }
