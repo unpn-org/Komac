@@ -107,7 +107,26 @@ impl NsisVersion {
         trace!("Detecting version from strings block");
 
         // The strings block starts with a UTF-16 null byte if it is Unicode
-        let unicode = &strings_block[..size_of::<u16>()] == b"\0\0";
+        let unicode = strings_block.starts_with(b"\0\0");
+
+        if unicode
+            && strings_block
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter(|bytes| {
+                    (0xE000..=0xE003).contains(&u16::from_le_bytes([bytes[0], bytes[1]]))
+                })
+                .take(2)
+                .count()
+                == 2
+        {
+            return Self {
+                major: 2,
+                minor: 46,
+                park: true,
+            };
+        }
 
         debug!(%unicode);
 
@@ -115,7 +134,7 @@ impl NsisVersion {
         let mut nsis2_count = 0;
 
         let codes = if unicode {
-            assert_eq!(strings_block.len() % size_of::<u16>(), 0);
+            let strings_block = &strings_block[..strings_block.len() / 2 * 2];
 
             Either::Left(
                 <[U16<LE>]>::ref_from_bytes(strings_block)
@@ -178,6 +197,18 @@ mod tests {
     use rstest::rstest;
 
     use super::NsisVersion;
+
+    #[test]
+    fn detects_park_unicode_codes() {
+        assert!(NsisVersion::detect(b"\0\0\x01\xe0\x00\x80\0\0\x03\xe0\x00\x80\0\0").is_park());
+    }
+
+    #[test]
+    fn detects_version_from_empty_and_truncated_blocks() {
+        for block in [b"".as_slice(), b"\0", b"\0\0x"] {
+            assert_eq!(NsisVersion::detect(block), NsisVersion::v3());
+        }
+    }
 
     #[test]
     fn version_from_manifest() {
