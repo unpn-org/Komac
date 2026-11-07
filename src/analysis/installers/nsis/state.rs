@@ -668,4 +668,83 @@ mod tests {
         assert_eq!(state.variables.get(&1), Some(""));
         assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
     }
+    #[test]
+    fn account_type_plugins_preserve_saved_registers_on_the_stack() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let strings = b"\0Plugins\\userinfo.DLL\0GetAccountType\0GetOriginalAccountType\0";
+        let mut state = state(strings, &[], &mut read);
+        for function in [22, 37] {
+            state.stack = vec![Cow::Borrowed("0"), Cow::Borrowed("")];
+            state.exec_flags[ExecFlag::Errors] = I32::new(1);
+            Entry::RegisterDLL {
+                dll_file_name: I32::new(1),
+                function: I32::new(function),
+                display_text: I32::ZERO,
+                no_unload: I32::ZERO,
+            }
+            .execute(&mut state)
+            .unwrap();
+            assert_eq!(state.stack.pop().as_deref(), Some("Admin"));
+            assert_eq!(state.stack.pop().as_deref(), Some(""));
+            assert_eq!(state.stack.pop().as_deref(), Some("0"));
+            assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
+        }
+    }
+
+    #[test]
+    fn account_type_plugin_preserves_the_arp_display_name_suffix() {
+        let mut strings = vec![0];
+        let mut add_string = |value: &[u8]| {
+            let offset = strings.len() as i32;
+            strings.extend(value);
+            strings.push(0);
+            offset
+        };
+        let dll = add_string(b"Plugins\\UserInfo.dll");
+        let function = add_string(b"GetAccountType");
+        let key = add_string(b"Firefox Developer Edition");
+        let registers = [0x80, 0x81, 0x82, 0x83].map(|index| add_string(&[3, index, 0x80]));
+        let name = add_string(b"Firefox Developer Edition\x03\x83\x80 (x64 gu-IN)");
+        let [r0, r1, r2, r3] = registers;
+        // The stack/register convention used by Firefox's getUninstallKey and
+        // its nested UserInfo call. The empty $3 is the non-ESR name suffix.
+        let entries = [
+            [31, r3, 0, 0, 0, 0, 0], // Push $3
+            [31, 0, 0, 1, 0, 0, 0],  // Exch
+            [31, 3, 1, 0, 0, 0, 0],  // Pop $3
+            [31, r0, 0, 0, 0, 0, 0],
+            [31, r1, 0, 0, 0, 0, 0],
+            [31, r2, 0, 0, 0, 0, 0],
+            [5, 16, 0, 0, 0, 0, 0], // Call the account helper
+            [25, 3, key, 0, 0, 0, 0],
+            [31, 2, 1, 0, 0, 0, 0],
+            [31, 1, 1, 0, 0, 0, 0],
+            [31, 0, 1, 0, 0, 0, 0],
+            [31, r3, 0, 0, 0, 0, 0],
+            [31, 0, 0, 1, 0, 0, 0],
+            [31, 3, 1, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0],
+            [31, r0, 0, 0, 0, 0, 0], // Save $0 across UserInfo
+            [44, dll, function, 0, 0, 0, 0],
+            [31, 0, 1, 0, 0, 0, 0], // Pop the account type
+            [31, 0, 1, 0, 0, 0, 0], // Restore $0
+            [1, 0, 0, 0, 0, 0, 0],
+        ]
+        .map(|values| {
+            let bytes: Vec<_> = values.into_iter().flat_map(i32::to_le_bytes).collect();
+            Entry::try_read_from_bytes(&bytes).unwrap()
+        });
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(&strings, &entries, &mut read);
+        state.variables.insert(0, "0");
+        state.variables.insert(3, "");
+        state.stack = vec![Cow::Borrowed("sentinel"), Cow::Borrowed("26300")];
+        assert_eq!(state.execute_code_segment(0), Ok(Entry::Return));
+        assert_eq!(state.stack, ["sentinel", "Firefox Developer Edition"]);
+        assert_eq!(state.variables.get(&3), Some(""));
+        assert_eq!(
+            state.get_string(name),
+            "Firefox Developer Edition (x64 gu-IN)"
+        );
+    }
 }
