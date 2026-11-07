@@ -98,6 +98,13 @@ impl Nsis {
             &mut read_file,
         )?;
 
+        state.exec_flags[entry::ExecFlag::RegView] =
+            zerocopy::I32::new(if architecture.is_64_bit() {
+                0x100
+            } else {
+                0x200
+            });
+
         // https://nsis.sourceforge.io/Reference/.onInit
         if header.code_on_init() != -1 {
             debug!("Simulating code execution for .onInit callback");
@@ -196,10 +203,13 @@ impl Nsis {
         })
     }
 
+    #[cfg(test)]
     pub fn display_name(&self) -> Option<&registry::Value> {
         const DISPLAY_NAME: &str = "DisplayName";
 
-        self.registry.get_value_by_name(DISPLAY_NAME)
+        self.registry
+            .uninstall_entries()
+            .find_map(|(_, _, values)| Registry::uninstall_value(values, DISPLAY_NAME))
     }
 }
 
@@ -219,9 +229,23 @@ impl Installers for Nsis {
             }
             (detected_scope, install_directory_scope) => detected_scope.or(install_directory_scope),
         };
-        let display_name = self.display_name();
-        let publisher = self.registry.get_value_by_name("Publisher");
-        let display_version = self.registry.get_value_by_name("DisplayVersion");
+        let apps_and_features_entries = self
+            .registry
+            .uninstall_entries()
+            .filter_map(|(_, code, values)| {
+                let name = Registry::uninstall_value(values, "DisplayName");
+                let publisher = Registry::uninstall_value(values, "Publisher");
+                let version = Registry::uninstall_value(values, "DisplayVersion");
+                (name.is_some() || publisher.is_some() || version.is_some()).then(|| {
+                    AppsAndFeaturesEntry::builder()
+                        .maybe_display_name(name.cloned())
+                        .maybe_publisher(publisher.cloned())
+                        .maybe_display_version(version.cloned())
+                        .product_code(code)
+                        .build()
+                })
+            })
+            .collect::<AppsAndFeaturesEntries>();
 
         let installer = Installer {
             locale: LanguageId::from_id(self.primary_language_id)
@@ -236,20 +260,7 @@ impl Installers for Nsis {
             },
             scope,
             product_code: product_code.map(str::to_owned),
-            apps_and_features_entries: if display_name.is_some()
-                || publisher.is_some()
-                || display_version.is_some()
-            {
-                AppsAndFeaturesEntry::builder()
-                    .maybe_display_name(display_name.cloned())
-                    .maybe_publisher(publisher.cloned())
-                    .maybe_display_version(display_version.cloned())
-                    .maybe_product_code(product_code)
-                    .build()
-                    .into()
-            } else {
-                AppsAndFeaturesEntries::new()
-            },
+            apps_and_features_entries,
             installation_metadata: InstallationMetadata::new_install_location(
                 self.install_directory
                     .as_deref()
@@ -308,5 +319,78 @@ mod tests {
                 .remove(0);
 
         assert_eq!(installer.scope, None);
+    }
+    #[test]
+    fn arp_values_are_kept_with_their_own_uninstall_key() {
+        let mut nsis =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App");
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"Software\A",
+            "DisplayName",
+            "Wrong App",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"Software\A",
+            "Publisher",
+            "Wrong Publisher",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            UNINSTALL_KEY,
+            "DisplayVersion",
+            "1.2.3",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"software\microsoft\windows\currentversion\uninstall\Other.App",
+            "displayname",
+            "Other App",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"software\microsoft\windows\currentversion\uninstall\Other.App",
+            "publisher",
+            "Other Publisher",
+        );
+        let installer = nsis.installers().remove(0);
+        let entries = installer
+            .apps_and_features_entries
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        let app = entries
+            .iter()
+            .find(|entry| entry.display_name() == Some("Test App"))
+            .unwrap();
+        assert_eq!(app.publisher(), None);
+        assert_eq!(
+            app.display_version().map(ToString::to_string),
+            Some("1.2.3".to_owned())
+        );
+        assert_eq!(app.product_code(), Some("Test.App"));
+        let other = entries
+            .iter()
+            .find(|entry| entry.display_name() == Some("Other App"))
+            .unwrap();
+        assert_eq!(other.publisher(), Some("Other Publisher"));
+        assert_eq!(other.display_version(), None);
+    }
+
+    #[test]
+    fn does_not_report_arp_for_non_uninstall_keys() {
+        let mut nsis =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App");
+        nsis.registry
+            .remove_key(RegRoot::HKEY_LOCAL_MACHINE, UNINSTALL_KEY);
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"Software\Test",
+            "DisplayName",
+            "Not ARP",
+        );
+        assert!(nsis.installers()[0].apps_and_features_entries.is_empty());
+        assert_eq!(nsis.display_name(), None);
     }
 }
