@@ -6,6 +6,7 @@ mod message_box;
 mod push_pop;
 mod seek_from;
 mod show_window;
+mod std_utils;
 pub mod system;
 mod window_message;
 
@@ -1216,6 +1217,10 @@ impl Entry {
                                 files: &mut state.file_system,
                             },
                         );
+                    } else if dll_file_name.ends_with("StdUtils.dll")
+                        && std_utils::call(&function, &mut state.stack)
+                    {
+                        debug!(%function, "Simulated StdUtils plugin call for default invocation");
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
