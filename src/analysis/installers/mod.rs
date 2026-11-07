@@ -7,6 +7,7 @@ mod msi;
 pub mod msix_family;
 pub mod nsis;
 pub mod pe;
+mod sfx;
 pub mod squirrel;
 pub mod utils;
 pub(crate) mod zip;
