@@ -80,6 +80,88 @@ fn explicit_ansi_conversion_preserves_multibyte_characters() {
 }
 
 #[test]
+fn os_registry_values_use_profile_versions_and_windows_compatibility_strings() {
+    let mut h = Harness::new();
+    let key = r"Software\Microsoft\Windows NT\CurrentVersion";
+    assert_eq!(
+        h.system.windows_registry_value(key, "CurrentVersion"),
+        Some(("6.3".to_owned(), RegType::String))
+    );
+    assert_eq!(
+        h.system
+            .windows_registry_value(key, "CurrentBuild")
+            .unwrap()
+            .0,
+        "26300"
+    );
+    assert_eq!(
+        h.system.windows_registry_value(key, "UBR").unwrap().0,
+        "9818"
+    );
+    assert_eq!(
+        h.system
+            .windows_registry_value("Software\\Example", "CurrentVersion"),
+        None
+    );
+    h.system.engine.environment.version = (6, 1, 7601);
+    assert_eq!(
+        h.system
+            .windows_registry_value(key, "CurrentVersion")
+            .unwrap()
+            .0,
+        "6.1"
+    );
+    assert_eq!(
+        h.system
+            .windows_registry_value(key, "CurrentMajorVersionNumber"),
+        None
+    );
+}
+
+#[test]
+fn nsis_reads_cached_windows_version_and_execution_flags() {
+    let mut h = Harness::new();
+    h.flags[ExecFlag::Errors] = I32::new(7);
+    for (offset, size, expected) in [
+        (56, 4, 26300),
+        (60, 1, 129),
+        (61, 1, 0),
+        (62, 1, 0),
+        (63, 1, 10),
+        (62, 2, 2560),
+        (8, 4, 7),
+    ] {
+        assert_eq!(
+            h.system.read_memory(0, (offset << 24) | size, &h.flags),
+            Some(expected)
+        );
+    }
+    assert_eq!(h.flags[ExecFlag::Errors].get(), 7);
+    assert_eq!(h.system.read_memory(0, (63 << 24) | 4, &h.flags), None);
+    assert_eq!(h.system.read_memory(0, 8, &h.flags), None);
+    h.system
+        .configure(winget_types::installer::Architecture::X64, true, None);
+    assert_eq!(h.system.read_memory(0, (60 << 24) | 1, &h.flags), Some(1));
+}
+
+#[test]
+fn nsis_read_memory_uses_only_known_simulated_allocations() {
+    let mut h = Harness::new();
+    h.call("*(&i8 0x1122334455667788)p.r0");
+    let address = engine::integer(&h.reg(0));
+    assert_eq!(
+        h.system.read_memory(address, (2 << 24) | 2, &h.flags),
+        Some(0x5566)
+    );
+    assert_eq!(h.system.read_memory(address, (7 << 24) | 2, &h.flags), None);
+    assert_eq!(
+        h.system.read_memory(u64::MAX, (1 << 24) | 1, &h.flags),
+        None
+    );
+    assert_eq!(h.system.read_memory(0x1234, 4, &h.flags), None);
+}
+
+#[test]
 fn pointer_structures_roundtrip_packed_scalars_and_strings() {
     let mut h = Harness::new();
     h.call("*(&i32)p.r0");

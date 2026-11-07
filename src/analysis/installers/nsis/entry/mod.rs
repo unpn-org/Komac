@@ -1476,6 +1476,23 @@ impl Entry {
                 let value_name = state.get_string(value_name.get());
 
                 debug!("ReadReg: {output} {root} {key_name} {value_name}");
+                if root.is_local_machine()
+                    && state
+                        .registry
+                        .value_type(root, &key_name, &value_name)
+                        .is_none()
+                    && let Some((value, kind)) = state
+                        .mock_caller
+                        .windows_registry_value(&key_name, &value_name)
+                {
+                    state.registry.insert_typed(
+                        root,
+                        key_name.clone(),
+                        value_name.clone(),
+                        value,
+                        kind,
+                    );
+                }
                 let kind = state.registry.value_type(root, &key_name, &value_name);
                 let value = state
                     .registry
@@ -1806,8 +1823,37 @@ impl Entry {
             Self::InstallerTypeSet { index } => {
                 debug!("InstallerTypeSet: {index}");
             }
-            Self::GetOSInfo { .. } => {
-                debug!("GetOSInfo");
+            Self::GetOSInfo {
+                output,
+                input,
+                operation,
+                memory_spec,
+                ..
+            } => {
+                let input = state.get_string(input.get());
+                // WinCore.nsh and MultiUser.nsh define these per-user known folders.
+                let value = match operation.get() {
+                    0 => system::known_folder_path(&input).map(Cow::Borrowed),
+                    1 => {
+                        let address = super::state::parse_int64(&input) as u64;
+                        let spec = state.get_int(memory_spec.get()) as u32;
+                        state
+                            .mock_caller
+                            .read_memory(address, spec, &state.exec_flags)
+                            .map(|value| Cow::Owned(value.to_string()))
+                    }
+                    _ => None,
+                };
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    warn!(
+                        "Unsupported NSIS OS information operation {}: {input}",
+                        operation.get()
+                    );
+                }
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::ReservedOPCode => {
                 debug!("ReservedOPCode");
