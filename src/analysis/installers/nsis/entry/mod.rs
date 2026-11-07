@@ -389,7 +389,13 @@ pub enum Entry {
     InstallerTypeSet {
         index: I32<LE>,
     } = 64u32.to_le(),
-    GetOSInfo = 65u32.to_le(),
+    GetOSInfo {
+        flags: I32<LE>,
+        output: I32<LE>,
+        input: I32<LE>,
+        operation: I32<LE>,
+        memory_spec: I32<LE>,
+    } = 65u32.to_le(),
     ReservedOPCode = 66u32.to_le(),
     LockWindow {
         on_off: I32<LE>,
@@ -1635,7 +1641,7 @@ impl Entry {
             Self::InstallerTypeSet { index } => {
                 debug!("InstallerTypeSet: {index}");
             }
-            Self::GetOSInfo => {
+            Self::GetOSInfo { .. } => {
                 debug!("GetOSInfo");
             }
             Self::ReservedOPCode => {
