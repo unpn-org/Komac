@@ -117,6 +117,83 @@ impl MockCaller {
         self.engine.environment.ticks = self.engine.environment.ticks.saturating_add(milliseconds);
     }
 
+    /// Returns an OS registry value from the configured Windows profile.
+    pub fn windows_registry_value(&mut self, key: &str, name: &str) -> Option<(String, RegType)> {
+        if !key
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(r"Software\Microsoft\Windows NT\CurrentVersion")
+        {
+            return None;
+        }
+        let version = self.engine.environment.version;
+        let (value, kind) = match name.to_ascii_lowercase().as_str() {
+            "currentversion" => (
+                if version >= (6, 3, 0) {
+                    "6.3".to_owned()
+                } else {
+                    format!("{}.{}", version.0, version.1)
+                },
+                RegType::String,
+            ),
+            "currentbuild" | "currentbuildnumber" => (version.2.to_string(), RegType::String),
+            "currentmajorversionnumber" if version.0 >= 10 => {
+                (version.0.to_string(), RegType::DWord)
+            }
+            "currentminorversionnumber" if version.0 >= 10 => {
+                (version.1.to_string(), RegType::DWord)
+            }
+            "ubr" if version.0 >= 10 => (
+                self.engine.environment.version_revision.to_string(),
+                RegType::DWord,
+            ),
+            _ => return None,
+        };
+        self.engine.assume("os-version-registry");
+        Some((value, kind))
+    }
+
+    /// Reads the NSIS execution flags, cached OS information, or simulated memory.
+    pub fn read_memory(&mut self, address: u64, spec: u32, flags: &ExecFlags) -> Option<i64> {
+        let size = (spec & 0xff) as usize;
+        let offset = u64::from(spec >> 24);
+        let environment = &self.engine.environment;
+        let pointer = environment.pointer;
+        if size > pointer {
+            return None;
+        }
+        let value = if address == 0 {
+            let version = environment.version;
+            let wow64 =
+                environment.process_machine == 0x14c && environment.native_machine == 0x8664;
+            let mut bytes: Vec<_> = flags
+                .snapshot()
+                .into_iter()
+                .flat_map(i32::to_le_bytes)
+                .collect();
+            bytes.extend(version.2.to_le_bytes());
+            bytes.extend([
+                1 | if wow64 { 0x80 } else { 0 },
+                0,
+                version.1 as u8,
+                version.0 as u8,
+            ]);
+            let start = offset as usize;
+            let mut value = [0; 8];
+            value[..size].copy_from_slice(bytes.get(start..start.checked_add(size)?)?);
+            self.engine.assume("nsis-os-information");
+            u64::from_le_bytes(value)
+        } else {
+            self.engine
+                .memory
+                .number(address.checked_add(offset)?, size)?
+        };
+        Some(if pointer == 4 {
+            i64::from(value as i32)
+        } else {
+            value as i64
+        })
+    }
+
     fn store_context(&mut self, command: &str, context: &mut Context<'_, '_>) -> bool {
         let mut chars = command.chars().peekable();
         while let Some(character) = chars.next() {
