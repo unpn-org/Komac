@@ -180,7 +180,7 @@ impl Nsis {
                     .and_then(|file| {
                         let mut reader = (state.read_file)(file.position()?).ok()?;
                         let machine = machine_from_exe_reader(&mut reader).ok()?;
-                        Some(Architecture::from_machine(machine))
+                        Architecture::try_from_machine(machine)
                     })
             });
 
