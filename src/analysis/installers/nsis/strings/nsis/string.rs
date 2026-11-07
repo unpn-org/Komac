@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::{
-    super::{AnsiString, WideString, encode_char},
+    super::{AnsiString, WideString},
     NsisChar, NsisStr,
 };
 
@@ -106,7 +106,7 @@ impl NsisString {
         match (self, value) {
             (Self::Ansi(dst), NsisStr::Ansi(src)) => dst.push_ansi_str(src),
             (Self::Wide(dst), NsisStr::Wide(src)) => dst.push_str(src),
-            (Self::Ansi(dst), NsisStr::Wide(src)) => dst.extend(src.chars().map(encode_char)),
+            (Self::Ansi(dst), NsisStr::Wide(src)) => dst.push_str(&src.to_string_lossy()),
             (Self::Wide(dst), NsisStr::Ansi(src)) => dst.push_str(&src.to_wide()),
         }
     }
