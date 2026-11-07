@@ -115,6 +115,9 @@ impl Nsis {
             &mut read_file,
             first_header.is_nsisbi(),
         )?;
+        state.exec_flags[entry::ExecFlag::Silent] =
+            zerocopy::I32::new(i32::from(first_header.is_silent()));
+
         state.exec_flags[entry::ExecFlag::RegView] =
             zerocopy::I32::new(if architecture.is_64_bit() {
                 0x100
