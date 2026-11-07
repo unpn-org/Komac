@@ -99,3 +99,25 @@ impl fmt::Debug for VSString<'_> {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_unicode_values_including_mojibake_encoded_by_the_producer() {
+        for value in ["Linköping", "LinkÃ¶ping"] {
+            let mut bytes = vec![0; 6];
+            bytes[2..4].copy_from_slice(&((value.encode_utf16().count() + 1) as u16).to_le_bytes());
+            bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+            bytes.extend("CompanyName\0".encode_utf16().flat_map(u16::to_le_bytes));
+            bytes.resize(bytes.len().next_multiple_of(4), 0);
+            bytes.extend(value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+            let length = bytes.len() as u16;
+            bytes[..2].copy_from_slice(&length.to_le_bytes());
+            let string = VSString::read_from(&bytes).unwrap();
+            assert_eq!(string.key(), "CompanyName");
+            assert_eq!(string.value(), value);
+        }
+    }
+}
