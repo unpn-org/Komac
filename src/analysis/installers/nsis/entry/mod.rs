@@ -11,7 +11,7 @@ mod window_message;
 
 use std::cmp::{Ordering, max};
 
-use compact_str::{ToCompactString, format_compact};
+use compact_str::ToCompactString;
 use creation_disposition::CreationDisposition;
 pub use del_flags::DelFlags;
 pub use exec_flag::{ExecFlag, ExecFlags};
@@ -974,11 +974,19 @@ impl Entry {
             } => {
                 let is_64_bit = *is_64_bit != I32::ZERO;
                 let format = state.get_string(format.get());
-                let formatted = if format.as_nsis_str().starts_with("0x") {
-                    format_compact!("{:#X}", input.get())
-                } else {
-                    input.get().to_compact_string()
-                };
+                let value = state.get_int64(input.get());
+                let formatted = super::int_fmt::format_integer(
+                    &format.to_string_lossy(),
+                    value,
+                    is_64_bit,
+                    state.str_block.starts_with(b"\0\0"),
+                    super::codepage::ansi(),
+                )
+                .unwrap_or_else(|| {
+                    warn!(%format, "Unsupported IntFmt format during static analysis");
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    String::new()
+                });
                 debug!("IntFmt{}: {formatted}", if is_64_bit { "64" } else { "" });
                 state.variables.insert(
                     output.get().unsigned_abs() as usize,
