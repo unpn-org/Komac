@@ -1221,6 +1221,16 @@ impl Entry {
                         && std_utils::call(&function, &mut state.stack)
                     {
                         debug!(%function, "Simulated StdUtils plugin call for default invocation");
+                    } else if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("UserInfo.dll"))
+                        && matches!(&*function, "GetAccountType" | "GetOriginalAccountType")
+                    {
+                        // These exports take no arguments and push one account type.
+                        // Simulate an administrative installation and report that assumption.
+                        state.stack.push(Cow::Borrowed("Admin"));
+                        warn!(%function, "UserInfo uses a simulated administrator account; account-dependent metadata requires independent validation");
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
