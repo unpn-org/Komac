@@ -87,7 +87,7 @@ impl FsEntry {
     /// Returns the position if this entry is a file, or None if it is a directory.
     pub const fn position(&self) -> Option<u64> {
         match self {
-            Self::File { position, .. } => Some(*position + size_of::<u32>() as u64),
+            Self::File { position, .. } => position.checked_add(size_of::<u32>() as u64),
             Self::Link { .. } | Self::Directory(_) => None,
         }
     }
@@ -145,5 +145,19 @@ impl fmt::Debug for FsEntry {
 impl fmt::Display for FsEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.name().fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FsEntry;
+
+    #[test]
+    fn file_position_overflow_is_not_a_parser_panic() {
+        assert_eq!(
+            FsEntry::new_file("app.exe", None, u64::MAX).position(),
+            None
+        );
+        assert_eq!(FsEntry::new_file("app.exe", None, 0u64).position(), Some(4));
     }
 }
