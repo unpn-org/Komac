@@ -241,6 +241,13 @@ impl<'data> NsisState<'data> {
         bound_string(NsisCow::Owned(buf))
     }
 
+    pub fn registry_root(&self, root: super::registry::RegRoot) -> super::registry::RegRoot {
+        root.resolve(
+            self.exec_flags[super::entry::ExecFlag::ShellVarContext].get() != 0,
+            self.exec_flags[super::entry::ExecFlag::RegView].get(),
+        )
+    }
+
     /// Resolves the string at `relative_offset` and parses it as a decimal integer, or as
     /// hexadecimal if it starts with `0x`. Returns `0` if the string is not a valid integer.
     pub fn get_int(&self, relative_offset: i32) -> i32 {
@@ -322,4 +329,74 @@ const fn decode_number_from_char(mut char: u16) -> u16 {
     char &= ASCII_MASK;
     let le_bytes = char.to_le_bytes();
     le_bytes[0] as u16 | ((le_bytes[1] as u16) << 7)
+}
+
+#[cfg(test)]
+mod tests {
+    use zerocopy::TryFromBytes;
+
+    use super::*;
+    use crate::analysis::installers::nsis::{entry::ExecFlag, registry::RegRoot};
+
+    fn state<'a>(
+        strings: &'a [u8],
+        entries: &'a [Entry],
+        read_file: &'a mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
+    ) -> NsisState<'a> {
+        // One language string referring to offset 1.
+        let language_table =
+            LanguageTable::ref_from_bytes(&[9, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]).unwrap();
+        NsisState {
+            read_file,
+            str_block: strings,
+            entries,
+            language_table,
+            stack: Vec::new(),
+            variables: Variables::new(),
+            registry: Registry::new(),
+            file_system: FileSystem::new(),
+            exec_flags: ExecFlags::new(),
+            last_used_exec_flags: ExecFlags::new(),
+            status_up_hack: I32::ZERO,
+            mock_caller: MockCaller::new(),
+            version: NsisVersion::v3(),
+        }
+    }
+    #[test]
+    fn registry_reads_replace_or_clear_the_output_register() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0Key\0Version\0", &[], &mut read);
+        state
+            .registry
+            .insert_value(RegRoot::HKEY_CURRENT_USER, "Key", "Version", "1.2.3");
+        let entry = Entry::ReadReg {
+            output: I32::new(0),
+            root: RegRoot::HKEY_CURRENT_USER,
+            key_name: I32::new(1),
+            value_name: I32::new(5),
+            r#type: I32::ZERO,
+        };
+        state.variables.insert(0, "stale");
+        entry.execute(&mut state).unwrap();
+        assert_eq!(
+            state
+                .variables
+                .get(&0)
+                .map(|value| value.to_string_lossy().into_owned())
+                .as_deref(),
+            Some("1.2.3")
+        );
+        state.registry.remove_key(RegRoot::HKEY_CURRENT_USER, "Key");
+        entry.execute(&mut state).unwrap();
+        assert_eq!(
+            state
+                .variables
+                .get(&0)
+                .map(|value| value.to_string_lossy().into_owned())
+                .as_deref(),
+            Some("")
+        );
+        assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
+    }
+
 }
