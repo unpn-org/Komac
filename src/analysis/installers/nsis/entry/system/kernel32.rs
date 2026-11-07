@@ -2,11 +2,7 @@ use std::borrow::Borrow;
 
 use indexmap::IndexMap;
 
-use super::{Call, ParsedCall};
-
-/// A mock [`Kernel32`] module.
-///
-/// Currently, only [`SetEnvironmentVariable`] is implemented.
+/// Environment variables set by the simulated [`SetEnvironmentVariable`] function.
 ///
 /// [`SetEnvironmentVariable`]: Self::set_environment_variable
 #[derive(Clone, Debug)]
@@ -15,8 +11,6 @@ pub struct Kernel32 {
 }
 
 impl Kernel32 {
-    pub const NAME: &str = "Kernel32";
-
     /// Creates a new mock [`Kernel32`].
     #[inline]
     pub fn new() -> Self {
@@ -38,7 +32,7 @@ impl Kernel32 {
     /// If `value` is `None`, the environment variable is removed.
     ///
     /// [`SetEnvironmentVariable`]: https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setenvironmentvariable
-    fn set_environment_variable<N, V>(&mut self, name: N, value: Option<V>)
+    pub(super) fn set_environment_variable<N, V>(&mut self, name: N, value: Option<V>)
     where
         N: Into<String> + Borrow<str>,
         V: Into<String>,
@@ -47,21 +41,6 @@ impl Kernel32 {
             self.environment_variables.insert(name.into(), value.into());
         } else {
             self.environment_variables.swap_remove(name.borrow());
-        }
-    }
-}
-
-impl Call for Kernel32 {
-    fn call(&mut self, call: &ParsedCall) -> bool {
-        match call.function() {
-            "SetEnvironmentVariable" => {
-                self.set_environment_variable(
-                    call.arguments()[0],
-                    call.arguments().get(1).copied(),
-                );
-                true
-            }
-            _ => false,
         }
     }
 }

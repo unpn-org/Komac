@@ -477,7 +477,9 @@ impl Entry {
                 debug!("DetailPrint: {}", state.get_string(update_str.get()));
             }
             Self::Sleep { time_ms } => {
-                debug!("Sleep: {}", max(state.get_int(time_ms.get()), 1));
+                let milliseconds = max(state.get_int(time_ms.get()), 1);
+                state.mock_caller.advance_time(milliseconds as u64);
+                debug!("Sleep: {milliseconds}");
             }
             Self::BringToFront => {
                 debug!("BringToFront");
@@ -1200,11 +1202,21 @@ impl Entry {
                 let function = state.get_string(function.get());
 
                 if *display_text == I32::ZERO {
-                    if dll_file_name.ends_with("System.dll")
-                        && function == "Call"
-                        && let Some(call) = state.stack.pop()
+                    if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("System.dll"))
                     {
-                        state.mock_caller.call(&call);
+                        state.mock_caller.invoke(
+                            &function,
+                            &mut system::Context {
+                                variables: &mut state.variables,
+                                stack: &mut state.stack,
+                                flags: &mut state.exec_flags,
+                                registry: &mut state.registry,
+                                files: &mut state.file_system,
+                            },
+                        );
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
@@ -1217,6 +1229,11 @@ impl Entry {
                             state.stack.pop();
                         }
                         state.stack.push(Cow::Borrowed("success"));
+                        warn!(
+                            "NSISdl download success is assumed; external prerequisites were not downloaded or executed"
+                        );
+                    } else {
+                        warn!(%dll_file_name, %function, "Unmodeled installer plugin; subsequent state requires independent validation");
                     }
                     debug!(
                         "CallInstDLL: {dll_file_name} {function}{}",
