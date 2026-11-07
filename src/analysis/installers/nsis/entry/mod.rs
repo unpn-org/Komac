@@ -9,6 +9,7 @@ mod seek_from;
 mod show_window;
 mod std_utils;
 pub mod system;
+mod uac;
 mod window_message;
 
 use std::{
@@ -1253,6 +1254,18 @@ impl Entry {
                         && std_utils::call(&function, &mut stack)
                     {
                         debug!(%function, "Simulated StdUtils plugin call for default invocation");
+                    } else if dll_file_name.ends_with("LangDLL.dll")
+                        && function == "LangDialog"
+                        && lang_dialog::select(&mut stack, state.language_table.id()).is_some()
+                    {
+                        warn!(
+                            language = state.language_table.id(),
+                            "LangDLL selects the primary installer language; language-dependent metadata requires independent validation"
+                        );
+                    } else if dll_file_name.ends_with("UAC.dll")
+                        && uac::query(&function, &mut state.variables, &mut stack)
+                    {
+                        warn!(%function, "UAC uses a simulated administrator account without an elevation fork; account-dependent metadata requires independent validation");
                     } else if dll_file_name
                         .rsplit(['\\', '/'])
                         .next()
@@ -1263,14 +1276,6 @@ impl Entry {
                         // Simulate an administrative installation and report that assumption.
                         stack.push(Cow::Borrowed("Admin"));
                         warn!(%function, "UserInfo uses a simulated administrator account; account-dependent metadata requires independent validation");
-                    } else if dll_file_name.ends_with("LangDLL.dll")
-                        && function == "LangDialog"
-                        && lang_dialog::select(&mut stack, state.language_table.id()).is_some()
-                    {
-                        warn!(
-                            language = state.language_table.id(),
-                            "LangDLL selects the primary installer language; language-dependent metadata requires independent validation"
-                        );
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
