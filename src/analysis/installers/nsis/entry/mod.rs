@@ -1280,10 +1280,11 @@ impl Entry {
                 // https://github.com/NSIS-Dev/nsis/blob/v311/Source/exehead/exec.c#L1240
                 // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L4558
 
-                let key_name = state.get_string(key_name.get());
+                let root = state.registry_root(*root);
+                let key_name = state.get_string(key_name.get()).into_string_lossy();
 
                 if *flags == I32::ZERO {
-                    let value_name = state.get_string(value_name.get());
+                    let value_name = state.get_string(value_name.get()).into_string_lossy();
 
                     if value_name.is_empty() {
                         debug!(r#"DeleteRegValue: "{root}\{key_name}""#);
@@ -1291,11 +1292,13 @@ impl Entry {
                         debug!(r#"DeleteRegValue: "{root}\{key_name}" "{value_name}""#);
                     }
 
-                    state.registry.remove_value_name(
-                        *root,
-                        &*key_name.to_string_lossy(),
-                        &*value_name.to_string_lossy(),
-                    );
+                    if state
+                        .registry
+                        .remove_value_name(root, &key_name, &value_name)
+                        .is_none()
+                    {
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    }
                 } else {
                     debug!(
                         r#"DeleteRegKey: {}"{root}\{key_name}""#,
@@ -1306,9 +1309,12 @@ impl Entry {
                         }
                     );
 
-                    state
+                    if !state
                         .registry
-                        .remove_key(*root, &*key_name.to_string_lossy());
+                        .delete_key(root, &key_name, flags.get() & 2 != 0)
+                    {
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    }
                 }
             }
             Self::WriteReg {
@@ -1321,11 +1327,12 @@ impl Entry {
             } => {
                 // https://github.com/NSIS-Dev/nsis/blob/v311/Source/exehead/exec.c#L1265
 
-                let key_name = state.get_string(key_name.get());
-                let value_name = state.get_string(value_name.get());
+                let root = state.registry_root(*root);
+                let key_name = state.get_string(key_name.get()).into_string_lossy();
+                let value_name = state.get_string(value_name.get()).into_string_lossy();
 
                 if r#type.is_string() {
-                    let value = state.get_string(value.get());
+                    let value = state.get_string(value.get()).into_string_lossy();
 
                     if sub_type.is_string() {
                         debug!(r#"WriteRegStr: "{root}\{key_name}" "{value_name}"="{value}""#);
@@ -1335,22 +1342,20 @@ impl Entry {
                         );
                     }
 
-                    state.registry.insert_value(
-                        *root,
-                        key_name.into_string_lossy(),
-                        value_name.into_string_lossy(),
-                        value.into_string_lossy(),
-                    );
+                    state
+                        .registry
+                        .insert_value(root, key_name, value_name, value);
                 } else if r#type.is_dword() {
                     let value = state.get_int(value.get());
 
                     debug!(r#"WriteRegDWORD: "{root}\{key_name}" "{value_name}"="{value}""#);
 
-                    state.registry.insert_value(
-                        *root,
-                        key_name.into_string_lossy(),
-                        value_name.into_string_lossy(),
+                    state.registry.insert_typed(
+                        root,
+                        key_name,
+                        value_name,
                         value.to_compact_string(),
+                        RegType::DWord,
                     );
                 } else if r#type.is_binary() {
                     debug!(
@@ -1361,6 +1366,9 @@ impl Entry {
                             _ => "Bin",
                         }
                     );
+                    state
+                        .registry
+                        .insert_typed(root, key_name, value_name, "", *sub_type);
                 }
             }
             Self::ReadReg {
@@ -1370,14 +1378,36 @@ impl Entry {
                 value_name,
                 r#type,
             } => {
-                let key_name = state.get_string(key_name.get());
-                let value_name = state.get_string(value_name.get());
+                let root = state.registry_root(*root);
+                let key_name = state.get_string(key_name.get()).into_string_lossy();
+                let value_name = state.get_string(value_name.get()).into_string_lossy();
 
-                let output = state.get_int(output.get());
-                debug!(
-                    "ReadReg{}: {output} {root} {key_name} {value_name}",
-                    if r#type.get() == 1 { "Dword" } else { "Str" }
-                );
+                debug!("ReadReg: {output} {root} {key_name} {value_name}");
+                let kind = state.registry.value_type(root, &key_name, &value_name);
+                let value = state
+                    .registry
+                    .get_value(root, &key_name, &value_name)
+                    .filter(|_| {
+                        matches!(
+                            kind,
+                            Some(RegType::String | RegType::ExpandedString | RegType::DWord)
+                        )
+                    })
+                    .cloned();
+                let matches_type = if r#type.get() == 1 {
+                    kind == Some(RegType::DWord)
+                } else {
+                    matches!(kind, Some(RegType::String | RegType::ExpandedString))
+                };
+                if !matches_type {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::RegEnumKey {
                 output,
@@ -1386,7 +1416,23 @@ impl Entry {
                 index,
                 value,
             } => {
-                debug!("RegEnumKey: {output} {root_key} {key_name} {index} {value}");
+                let root = state.registry_root(*root_key);
+                let key = state.get_string(key_name.get()).into_string_lossy();
+                let index = usize::try_from(state.get_int(index.get())).ok();
+                let name = index.and_then(|index| {
+                    if value.get() != 0 {
+                        state.registry.enum_subkey(root, &key, index)
+                    } else {
+                        state.registry.enum_value_name(root, &key, index)
+                    }
+                });
+                if !state.registry.key_exists(root, &key) || (value.get() == 0 && name.is_none()) {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                debug!("RegEnum: {root} {key} -> {:?}", name);
+                state
+                    .variables
+                    .insert(output.get() as usize, name.unwrap_or_default());
             }
             Self::FileClose { handle } => {
                 let handle = state.get_int(handle.get());
