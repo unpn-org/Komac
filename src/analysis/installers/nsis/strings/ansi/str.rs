@@ -62,7 +62,7 @@ impl AnsiStr {
     /// This borrows the original bytes if the string is entirely ASCII.
     #[must_use]
     pub fn to_string_lossy(&self) -> Cow<'_, str> {
-        WINDOWS_1252.decode_without_bom_handling(&self.0).0
+        crate::analysis::installers::nsis::codepage::decode(&self.0)
     }
 
     /// Converts the string into a UTF-16 [`WideString`], decoding each byte as Windows-1252.
@@ -83,7 +83,10 @@ impl AnsiStr {
 
     /// Returns an iterator over the characters of the string, decoded as Windows-1252.
     pub fn chars(&self) -> impl DoubleEndedIterator<Item = char> + ExactSizeIterator + '_ {
-        self.0.iter().map(|&byte| decode_char(byte))
+        self.to_string_lossy()
+            .chars()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// Returns an iterator over the raw bytes of the string.
