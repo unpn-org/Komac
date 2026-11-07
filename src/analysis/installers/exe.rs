@@ -1,7 +1,8 @@
-use std::io::{Read, Seek};
+use std::io::{Cursor, Read, Seek};
 
 use color_eyre::Result;
 use inno::{Inno, InnoInner, error::InnoError};
+use tracing::warn;
 use winget_types::installer::{Installer, InstallerType};
 
 use super::{super::Installers, AdvancedInstaller, Burn, Nsis, Squirrel};
@@ -43,7 +44,11 @@ pub enum ExeType {
 }
 
 impl Exe {
-    pub fn new<R: Read + Seek>(mut reader: R) -> Result<Self> {
+    pub fn new<R: Read + Seek>(reader: R) -> Result<Self> {
+        Self::new_at_depth(reader, 0)
+    }
+
+    fn new_at_depth<R: Read + Seek>(mut reader: R, depth: usize) -> Result<Self> {
         let pe = PE::read_from(&mut reader)?;
 
         let vs_version_info_bytes = pe.vs_version_info(&mut reader).ok();
@@ -153,19 +158,37 @@ impl Exe {
             Err(error) => return Err(error.into()),
         }
 
+        let mut setup_archive = false;
+        if depth < 2
+            && let Some(setup) = super::sfx::read_setup(&mut reader, &pe, product_name.as_deref())?
+        {
+            setup_archive = true;
+            let mut inner = Self::new_at_depth(Cursor::new(setup.data), depth + 1)?;
+            if let ExeType::Nsis(nsis) = &mut inner.r#type {
+                if let Some(architecture) = setup.architecture {
+                    nsis.architecture = architecture;
+                }
+                warn!("Wrapped NSIS metadata needs validation of external payload file operations");
+                return Ok(inner);
+            }
+        }
+
         Ok(Self {
             r#type: ExeType::Generic(Box::new(Installer {
                 architecture: pe.winget_architecture(),
-                r#type: if string_table.is_some_and(|mut table| {
-                    let original_filename = table.swap_remove(ORIGINAL_FILENAME);
-                    let file_description = table.swap_remove(FILE_DESCRIPTION);
+                r#type: if setup_archive
+                    || string_table.is_some_and(|mut table| {
+                        let original_filename = table.swap_remove(ORIGINAL_FILENAME);
+                        let file_description = table.swap_remove(FILE_DESCRIPTION);
 
-                    BASIC_INSTALLER_KEYWORDS.iter().any(|keyword| {
-                        original_filename.is_some_and(|filename| filename.contains(keyword))
-                            || file_description
-                                .is_some_and(|description| description.contains(keyword))
-                    })
-                }) {
+                        BASIC_INSTALLER_KEYWORDS.iter().any(|keyword| {
+                            original_filename.is_some_and(|filename| {
+                                filename.to_ascii_lowercase().contains(keyword)
+                            }) || file_description.is_some_and(|description| {
+                                description.to_ascii_lowercase().contains(keyword)
+                            })
+                        })
+                    }) {
                     Some(InstallerType::Exe)
                 } else {
                     Some(InstallerType::Portable)

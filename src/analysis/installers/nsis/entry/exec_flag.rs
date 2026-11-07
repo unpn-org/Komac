@@ -60,6 +60,28 @@ impl fmt::Display for ExecFlag {
 pub struct ExecFlags([I32<LE>; ExecFlag::COUNT]);
 
 impl ExecFlags {
+    /// Returns the execution flags as native integer values.
+    pub fn snapshot(&self) -> Vec<i32> {
+        self.0.iter().map(|value| value.get()).collect()
+    }
+
+    /// Restores the execution flags, preserving [`Abort`].
+    ///
+    /// Returns `false` if the number of values does not match the number of flags.
+    ///
+    /// [`Abort`]: ExecFlag::Abort
+    pub fn restore(&mut self, values: &[i32]) -> bool {
+        if values.len() != self.0.len() {
+            return false;
+        }
+        let abort = self[ExecFlag::Abort];
+        for (field, value) in self.0.iter_mut().zip(values) {
+            *field = I32::new(*value);
+        }
+        self[ExecFlag::Abort] = abort;
+        true
+    }
+
     #[inline]
     pub fn new() -> Self {
         Self::new_zeroed()

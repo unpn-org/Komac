@@ -4,6 +4,8 @@ mod file_data;
 mod file_system;
 mod first_header;
 mod header;
+mod ini;
+mod int_fmt;
 mod language;
 mod registry;
 mod section;
@@ -12,7 +14,7 @@ mod strings;
 mod variables;
 mod version;
 
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 
 use camino::Utf8Path;
 pub use error::NsisError;
@@ -20,7 +22,7 @@ use msi::LanguageId;
 use registry::Registry;
 use state::NsisState;
 use strsim::levenshtein;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use typed_path::{Utf8Component, Utf8WindowsPath, Utf8WindowsPathBuf};
 use variables::Variables;
 use winget_types::{
@@ -61,65 +63,148 @@ pub struct Nsis {
 impl Nsis {
     pub fn new<R: Read + Seek>(mut reader: R, pe: &PE) -> Result<Self, NsisError> {
         let manifest = pe.manifest(&mut reader).ok();
-
         let finder = FirstHeaderFinder::find(&mut reader, pe)?;
-
-        debug!(?finder);
+        let first_header = finder.first_header();
+        let indexed = first_header.is_nsisbi()
+            && header::indexed::probe(&mut reader, first_header.length_of_header())?;
+        let data_offset = finder.data_offset()
+            + if indexed {
+                4
+            } else if first_header.is_nsisbi() {
+                8
+            } else {
+                0
+            };
+        reader.seek(SeekFrom::Start(data_offset))?;
+        debug!(?finder, data_offset);
 
         let Decompressed {
             data: decompressed_data,
             is_solid,
             non_solid_start_offset,
+            record_width,
             compression,
             decoder,
         } = Header::decompress(&mut reader, finder.first_header())?;
 
         let architecture = pe.winget_architecture();
 
-        let header = Header::read_from(&decompressed_data, architecture.is_64_bit())?;
+        let header = if indexed {
+            Header::read_indexed(&decompressed_data)?
+        } else {
+            Header::read_from(&decompressed_data, architecture.is_64_bit())?
+        };
 
         debug!(?header);
 
         let mut file_data = file_data::FileData::new(
             decoder.into_inner(),
-            finder.data_offset(),
-            finder.first_header().length_of_header(),
+            data_offset,
+            first_header.length_of_header(),
             is_solid,
             non_solid_start_offset,
             compression,
-        );
+        )
+        .with_record_width(record_width)
+        .with_indexed_files(header.indexed_files().map(<[_]>::to_vec));
         let mut read_file = |position| file_data.read(position);
         let mut state = NsisState::new(
             &decompressed_data,
             &header,
             manifest.as_deref(),
             &mut read_file,
+            first_header.is_nsisbi(),
         )?;
+        state.mock_caller.configure(
+            architecture,
+            state.str_block.starts_with(b"\0\0"),
+            manifest.as_deref(),
+        );
 
-        // https://nsis.sourceforge.io/Reference/.onInit
+        state.exec_flags[entry::ExecFlag::RegView] =
+            zerocopy::I32::new(if architecture.is_64_bit() {
+                0x100
+            } else {
+                0x200
+            });
+
+        enum Outcome {
+            Ready,
+            Success,
+            Failed,
+            Quit,
+            Incomplete,
+        }
+        let mut outcome = Outcome::Ready;
+
+        // Abort/Quit in .onInit prevents installation. Interpreter failures also
+        // cannot justify registry writes from sections that were never reached.
         if header.code_on_init() != -1 {
             debug!("Simulating code execution for .onInit callback");
-            if let Err(invalid_entry) = state.execute_code_segment(header.code_on_init()) {
-                error!(%invalid_entry);
+            match state.execute_code_segment(header.code_on_init()) {
+                Ok(Entry::Quit) => {
+                    warn!(
+                        "Installer quit during initialization; installation sections were not reached"
+                    );
+                    outcome = Outcome::Quit;
+                }
+                Err(invalid_entry) => {
+                    error!(%invalid_entry);
+                    outcome = Outcome::Incomplete;
+                }
+                _ => {}
             }
         }
 
         for (index, section) in header.blocks().sections(&decompressed_data).enumerate() {
+            if !matches!(outcome, Outcome::Ready) {
+                break;
+            }
+            if state
+                .section_flags
+                .get(index)
+                .is_none_or(|flags| flags & 1 == 0)
+            {
+                continue;
+            }
             debug!(
                 r#"Simulating code execution for section {index} "{}""#,
                 state.get_string(section.name_offset())
             );
             match state.execute_code_segment(section.code_offset()) {
-                Ok(Entry::Quit) => break,
-                Err(invalid_entry) => error!(%invalid_entry),
+                Ok(Entry::Quit) => {
+                    warn!(
+                        index,
+                        "Installer quit during section execution; later sections were not reached"
+                    );
+                    outcome = Outcome::Quit;
+                }
+                Err(invalid_entry) => {
+                    outcome = if matches!(
+                        invalid_entry,
+                        EntryError::Abort { .. } | EntryError::Execute
+                    ) {
+                        Outcome::Failed
+                    } else {
+                        Outcome::Incomplete
+                    };
+                    error!(%invalid_entry);
+                }
                 _ => {}
             }
         }
 
-        // https://nsis.sourceforge.io/Reference/.onInstSuccess
-        if header.code_on_inst_success() != -1 {
-            debug!("Simulating code execution for .onInstSuccess callback");
-            match state.execute_code_segment(header.code_on_inst_success()) {
+        if matches!(outcome, Outcome::Ready) {
+            outcome = Outcome::Success;
+        }
+        let callback = match outcome {
+            Outcome::Success => header.code_on_inst_success(),
+            Outcome::Failed => header.code_on_inst_failed(),
+            _ => -1,
+        };
+        if callback != -1 {
+            debug!(callback, "Simulating installation outcome callback");
+            match state.execute_code_segment(callback) {
                 Err(EntryError::Abort { .. }) | Ok(..) => {}
                 Err(invalid_entry) => error!(%invalid_entry),
             }
@@ -178,7 +263,7 @@ impl Nsis {
                     .and_then(|file| {
                         let mut reader = (state.read_file)(file.position()?).ok()?;
                         let machine = machine_from_exe_reader(&mut reader).ok()?;
-                        Some(Architecture::from_machine(machine))
+                        Architecture::try_from_machine(machine)
                     })
             });
 
@@ -197,7 +282,9 @@ impl Nsis {
     pub fn display_name(&self) -> Option<&registry::Value> {
         const DISPLAY_NAME: &str = "DisplayName";
 
-        self.registry.get_value_by_name(DISPLAY_NAME)
+        self.registry
+            .uninstall_entries()
+            .find_map(|(_, _, values)| Registry::uninstall_value(values, DISPLAY_NAME))
     }
 }
 
@@ -217,9 +304,23 @@ impl Installers for Nsis {
             }
             (detected_scope, install_directory_scope) => detected_scope.or(install_directory_scope),
         };
-        let display_name = self.display_name();
-        let publisher = self.registry.get_value_by_name("Publisher");
-        let display_version = self.registry.get_value_by_name("DisplayVersion");
+        let apps_and_features_entries = self
+            .registry
+            .uninstall_entries()
+            .filter_map(|(_, code, values)| {
+                let name = Registry::uninstall_value(values, "DisplayName");
+                let publisher = Registry::uninstall_value(values, "Publisher");
+                let version = Registry::uninstall_value(values, "DisplayVersion");
+                (name.is_some() || publisher.is_some() || version.is_some()).then(|| {
+                    AppsAndFeaturesEntry::builder()
+                        .maybe_display_name(name.cloned())
+                        .maybe_publisher(publisher.cloned())
+                        .maybe_display_version(version.cloned())
+                        .product_code(code)
+                        .build()
+                })
+            })
+            .collect::<AppsAndFeaturesEntries>();
 
         let installer = Installer {
             locale: LanguageId::from_id(self.primary_language_id)
@@ -234,20 +335,7 @@ impl Installers for Nsis {
             },
             scope,
             product_code: product_code.map(str::to_owned),
-            apps_and_features_entries: if display_name.is_some()
-                || publisher.is_some()
-                || display_version.is_some()
-            {
-                AppsAndFeaturesEntry::builder()
-                    .maybe_display_name(display_name.cloned())
-                    .maybe_publisher(publisher.cloned())
-                    .maybe_display_version(display_version.cloned())
-                    .maybe_product_code(product_code)
-                    .build()
-                    .into()
-            } else {
-                AppsAndFeaturesEntries::new()
-            },
+            apps_and_features_entries,
             installation_metadata: InstallationMetadata::new_install_location(
                 self.install_directory
                     .as_deref()
@@ -286,6 +374,80 @@ mod tests {
             primary_language_id: 1033,
             install_directory: Some(Utf8WindowsPathBuf::from(install_directory)),
         }
+    }
+
+    #[test]
+    fn arp_values_are_kept_with_their_own_uninstall_key() {
+        let mut nsis =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App");
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"Software\A",
+            "DisplayName",
+            "Wrong App",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"Software\A",
+            "Publisher",
+            "Wrong Publisher",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            UNINSTALL_KEY,
+            "DisplayVersion",
+            "1.2.3",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"software\microsoft\windows\currentversion\uninstall\Other.App",
+            "displayname",
+            "Other App",
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"software\microsoft\windows\currentversion\uninstall\Other.App",
+            "publisher",
+            "Other Publisher",
+        );
+        let installer = nsis.installers().remove(0);
+        let entries = installer
+            .apps_and_features_entries
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        let app = entries
+            .iter()
+            .find(|entry| entry.display_name().as_deref() == Some("Test App"))
+            .unwrap();
+        assert_eq!(app.publisher(), None);
+        assert_eq!(
+            app.display_version().map(ToString::to_string),
+            Some("1.2.3".to_owned())
+        );
+        assert_eq!(app.product_code().as_deref(), Some("Test.App"));
+        let other = entries
+            .iter()
+            .find(|entry| entry.display_name().as_deref() == Some("Other App"))
+            .unwrap();
+        assert_eq!(other.publisher().as_deref(), Some("Other Publisher"));
+        assert_eq!(other.display_version(), None);
+    }
+
+    #[test]
+    fn does_not_report_arp_for_non_uninstall_keys() {
+        let mut nsis =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App");
+        nsis.registry
+            .remove_key(RegRoot::HKEY_LOCAL_MACHINE, UNINSTALL_KEY);
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            r"Software\Test",
+            "DisplayName",
+            "Not ARP",
+        );
+        assert!(nsis.installers()[0].apps_and_features_entries.is_empty());
+        assert_eq!(nsis.display_name(), None);
     }
 
     #[test]

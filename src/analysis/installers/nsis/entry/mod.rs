@@ -6,6 +6,7 @@ mod message_box;
 mod push_pop;
 mod seek_from;
 mod show_window;
+mod std_utils;
 pub mod system;
 mod window_message;
 
@@ -14,7 +15,7 @@ use std::{
     cmp::{Ordering, max},
 };
 
-use compact_str::{ToCompactString, format_compact};
+use compact_str::ToCompactString;
 use creation_disposition::CreationDisposition;
 pub use del_flags::DelFlags;
 pub use exec_flag::{ExecFlag, ExecFlags};
@@ -26,15 +27,17 @@ use push_pop::PushPop;
 use seek_from::SeekFrom;
 use show_window::ShowWindow;
 use thiserror::Error;
-use tracing::debug;
-use typed_path::Utf8WindowsPath;
+use tracing::{debug, warn};
+use typed_path::{Utf8Component, Utf8WindowsComponent, Utf8WindowsPath};
 use window_message::WindowMessage;
 use zerocopy::{I32, Immutable, KnownLayout, LE, TryFromBytes, U64};
 
 use super::{
+    Variables,
     file_system::RelativeLocation,
     registry::{RegRoot, RegType},
     state::NsisState,
+    strings::PredefinedVar,
 };
 use crate::analysis::installers::pe::{PE, VSVersionInfo};
 
@@ -122,8 +125,8 @@ pub enum Entry {
         reboot_ok: I32<LE>,
     } = 16u32.to_le(),
     GetFullPathname {
-        output: I32<LE>,
         input: I32<LE>,
+        output: I32<LE>,
         long_or_short_file_name: I32<LE>,
     } = 17u32.to_le(),
     SearchPath {
@@ -297,6 +300,7 @@ pub enum Entry {
         name: I32<LE>,
         value: I32<LE>,
         ini_file: I32<LE>,
+        write_value: I32<LE>,
     } = 48u32.to_le(),
     ReadIni {
         output: I32<LE>,
@@ -367,9 +371,9 @@ pub enum Entry {
         handle: I32<LE>,
     } = 60u32.to_le(),
     FindFirst {
-        file_spec: I32<LE>,
         output: I32<LE>,
         handle_output: I32<LE>,
+        file_spec: I32<LE>,
     } = 61u32.to_le(),
     WriteUninstaller {
         name: I32<LE>,
@@ -387,7 +391,13 @@ pub enum Entry {
     InstallerTypeSet {
         index: I32<LE>,
     } = 64u32.to_le(),
-    GetOSInfo = 65u32.to_le(),
+    GetOSInfo {
+        flags: I32<LE>,
+        output: I32<LE>,
+        input: I32<LE>,
+        operation: I32<LE>,
+        memory_spec: I32<LE>,
+    } = 65u32.to_le(),
     ReservedOPCode = 66u32.to_le(),
     LockWindow {
         on_off: I32<LE>,
@@ -410,6 +420,9 @@ pub enum Entry {
     FindProcess = 71u32.to_le(),
     GetFontVersion = 72u32.to_le(),
     GetFontName = 73u32.to_le(),
+    VerifyExternalFile {
+        path: I32<LE>,
+    } = 74u32.to_le(),
 }
 
 impl Entry {
@@ -420,6 +433,13 @@ impl Entry {
     )]
     pub fn execute(&self, state: &mut NsisState) -> Result<i32, EntryError> {
         match self {
+            Self::VerifyExternalFile { path } => {
+                warn!(
+                    "NSISBI external payload requires independent validation: {}",
+                    state.get_string(path.get())
+                );
+            }
+
             Self::Invalid => {
                 debug!("Invalid");
                 return Err(EntryError::Invalid);
@@ -446,7 +466,10 @@ impl Entry {
                 debug!("Quit");
             }
             Self::Call { address } => {
-                let resolved_address = state.resolve_address(address.get()) - 1;
+                let resolved_address = state
+                    .resolve_address(address.get())?
+                    .checked_sub(1)
+                    .ok_or(EntryError::Invalid)?;
                 debug!("Call {resolved_address}");
                 state.execute_code_segment(resolved_address)?;
             }
@@ -454,7 +477,9 @@ impl Entry {
                 debug!("DetailPrint: {}", state.get_string(update_str.get()));
             }
             Self::Sleep { time_ms } => {
-                debug!("Sleep: {}", max(state.get_int(time_ms.get()), 1));
+                let milliseconds = max(state.get_int(time_ms.get()), 1);
+                state.mock_caller.advance_time(milliseconds as u64);
+                debug!("Sleep: {milliseconds}");
             }
             Self::BringToFront => {
                 debug!("BringToFront");
@@ -491,6 +516,10 @@ impl Entry {
                     state
                         .file_system
                         .set_directory(&*path, RelativeLocation::Root);
+                    state.variables.insert(
+                        Variables::NUM_REGISTERS + PredefinedVar::OutDir as usize,
+                        path,
+                    );
                 }
             }
             Self::IfFileExists {
@@ -506,13 +535,13 @@ impl Entry {
                 {
                     debug!(
                         r#"IfFileExists: jumping to {if_exists} as "{file_name}" exists"#,
-                        if_exists = state.resolve_address(jump_amount_if_exists.get()),
+                        if_exists = jump_amount_if_exists.get(),
                     );
                     Ok(jump_amount_if_exists.get())
                 } else {
                     debug!(
                         r#"IfFileExists: jumping to {if_not_exists} as "{file_name}" does NOT exist"#,
-                        if_not_exists = state.resolve_address(jump_amount_if_not_exists.get()),
+                        if_not_exists = jump_amount_if_not_exists.get(),
                     );
                     Ok(jump_amount_if_not_exists.get())
                 };
@@ -616,21 +645,45 @@ impl Entry {
                 input,
                 long_or_short_file_name,
             } => {
-                // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L3986
-
-                debug!(
-                    "GetFullPathName: {}{} {}",
-                    if *long_or_short_file_name == I32::ZERO {
-                        "/SHORT "
-                    } else {
-                        ""
-                    },
+                // exec.c uses parm0 for the input string and var1 for output.
+                let input = state.get_string(input.get());
+                let path = Utf8WindowsPath::new(&input);
+                let symbolic_root = path.components().next().is_some_and(|part| {
+                    let part = part.as_str();
+                    (part.starts_with('%') && part.ends_with('%')) || part.starts_with('$')
+                });
+                let result = if input.is_empty() || *long_or_short_file_name == I32::ZERO {
+                    warn!(%input, "Cannot resolve empty or short Windows path during static analysis");
+                    None
+                } else if path.is_absolute() || symbolic_root {
+                    Some(path.normalize())
+                } else if !path.has_root()
+                    && !matches!(
+                        path.components().next(),
+                        Some(Utf8WindowsComponent::Prefix(_))
+                    )
+                {
+                    let base = state
+                        .variables
+                        .get(&(Variables::NUM_REGISTERS + PredefinedVar::OutDir as usize))
+                        .unwrap_or("$EXEDIR");
+                    Some(Utf8WindowsPath::new(base).join(path).normalize())
+                } else {
+                    warn!(%input, "Windows drive context is unavailable during static analysis");
+                    None
+                };
+                if let Some(result) = result {
+                    if !state.file_system.exists(&*input, RelativeLocation::Current) {
+                        warn!(%input, "GetFullPathName requires validation of the external Windows filesystem");
+                    }
+                    debug!("GetFullPathName: {input} -> {result}");
                     state
                         .variables
-                        .get(&(input.get() as usize))
-                        .unwrap_or_default(),
-                    state.get_string(output.get())
-                );
+                        .insert(output.get() as usize, result.into_string());
+                } else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    state.variables.insert(output.get() as usize, "");
+                }
             }
             Self::SearchPath { output, filename } => {
                 debug!(
@@ -673,14 +726,16 @@ impl Entry {
                 state.file_system.create_file(
                     &*name,
                     date,
-                    position.get().unsigned_abs(),
+                    state.file_position(position.get()),
                     RelativeLocation::Current,
                 );
             }
             Self::DeleteFile { filename, flags } => {
                 let filename = state.get_string(filename.get());
                 debug!(r#"Delete: "{filename}""#);
-                state.file_system.delete(filename, *flags);
+                if !state.file_system.delete(filename, *flags) {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
             }
             Self::MessageBox { mb_flags, text } => {
                 let text = state.get_string(text.get());
@@ -696,11 +751,14 @@ impl Entry {
                         ""
                     },
                 );
-                state.file_system.delete(path, *flags);
+                let existed = state.file_system.exists(&*path, RelativeLocation::Root);
+                if !state.file_system.delete(&*path, *flags) && (existed || path.is_empty()) {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
             }
             Self::StrLen { output, input } => {
                 let input = state.get_string(input.get());
-                let length = input.chars().count();
+                let length = input.encode_utf16().count();
 
                 debug!(r#"StrLen ${output} "{input}" # = {length}"#);
 
@@ -732,50 +790,27 @@ impl Entry {
                 let max_length = state.get_int(max_length.get());
 
                 let start_position = state.get_int(start_position.get());
-                let char_count = source.chars().count();
-
-                let mut result = source.clone();
-
-                if !source.is_empty() {
-                    // Get the start position as a usize, or add char_count to it to turn a
-                    // negative offset into a positive one.
-                    if let Ok(start_char) = usize::try_from(start_position)
-                        .or_else(|_| usize::try_from((start_position) + char_count as i32))
-                        .map(|start| start.min(char_count))
-                    {
-                        let start_byte = source
-                            .char_indices()
-                            .nth(start_char)
-                            .map_or(source.len(), |(i, _)| i);
-                        let sliced_source = &source[start_byte..];
-                        let sliced_source_char_count = sliced_source.chars().count();
-
-                        let new_length = if max_length == 0 {
-                            sliced_source_char_count
-                        } else if max_length.is_negative() {
-                            usize::try_from(sliced_source_char_count as i32 + max_length)
-                                .unwrap_or_default()
-                        } else {
-                            usize::try_from(max_length).unwrap_or_default()
-                        };
-
-                        let end_byte = sliced_source
-                            .char_indices()
-                            .nth(new_length)
-                            .map_or(sliced_source.len(), |(i, _)| i);
-
-                        let range = start_byte..(start_byte + end_byte);
-
-                        result = match result {
-                            Cow::Borrowed(b) => Cow::Borrowed(&b[range]),
-                            Cow::Owned(mut o) => {
-                                o.truncate(range.end);
-                                o.drain(..range.start);
-                                Cow::Owned(o)
-                            }
-                        };
-                    }
+                // NSIS Unicode string offsets and lengths count UTF-16 code
+                // units, including both halves of supplementary characters.
+                let units: Vec<_> = source.encode_utf16().collect();
+                let count = units.len() as i32;
+                let start = if start_position < 0 {
+                    count.saturating_add(start_position)
+                } else {
+                    start_position
                 }
+                .clamp(0, count) as usize;
+                let remaining = (units.len() - start) as i32;
+                let length = match max_length.cmp(&0) {
+                    Ordering::Equal => remaining,
+                    Ordering::Less => remaining.saturating_add(max_length).max(0),
+                    Ordering::Greater => max_length.min(remaining),
+                } as usize;
+                let result =
+                    String::from_utf16(&units[start..start + length]).unwrap_or_else(|_| {
+                        warn!("StrCpy split a Unicode surrogate pair");
+                        String::from_utf16_lossy(&units[start..start + length])
+                    });
 
                 match (max_length, start_position) {
                     (0, 0) => debug!(r#"StrCpy ${index} "{source}" # = "{result}""#),
@@ -792,11 +827,7 @@ impl Entry {
                     }
                 }
 
-                if result.is_empty() {
-                    state.variables.remove(&index);
-                } else {
-                    state.variables.insert(index, result);
-                }
+                state.variables.insert(index, result);
             }
             Self::StrCmp {
                 str_1,
@@ -843,26 +874,24 @@ impl Entry {
                 val1_gt_val2,
                 flags,
             } => {
-                let signed = *flags == I32::ZERO;
+                let signed = flags.get() & 0xff == 0;
                 let is_64_bit = (*flags & I32::new(0x8000)) != 0;
 
-                let val_1 = state.get_int(val_1.get());
-                let val_2 = state.get_int(val_2.get());
+                let val_1 = state.get_int64(val_1.get());
+                let val_2 = state.get_int64(val_2.get());
                 let comparison = match (signed, is_64_bit) {
-                    (true, true) => i64::from(val_1).cmp(&i64::from(val_2)),
-                    (true, false) => val_1.cmp(&val_2),
-                    (false, true) => {
-                        u64::from(val_1.cast_unsigned()).cmp(&u64::from(val_2.cast_unsigned()))
-                    }
-                    (false, false) => val_1.cast_unsigned().cmp(&val_2.cast_unsigned()),
+                    (true, true) => val_1.cmp(&val_2),
+                    (true, false) => (val_1 as i32).cmp(&(val_2 as i32)),
+                    (false, true) => (val_1 as u64).cmp(&(val_2 as u64)),
+                    (false, false) => (val_1 as u32).cmp(&(val_2 as u32)),
                 };
 
                 debug!(
                     "IntCmp{}: {val_1} {val_2} eq: {} lt: {} gt: {}",
                     if is_64_bit { "64" } else { "" },
-                    state.resolve_address(equal.get()),
-                    state.resolve_address(val1_lt_val2.get()),
-                    state.resolve_address(val1_gt_val2.get())
+                    equal.get(),
+                    val1_lt_val2.get(),
+                    val1_gt_val2.get()
                 );
 
                 return match comparison {
@@ -894,7 +923,7 @@ impl Entry {
                     4 => input1 | input2,
                     5 => input1 & input2,
                     6 => input1 ^ input2,
-                    7 => !input1,
+                    7 => i32::from(input1 == 0),
                     8 => i32::from(input1 != 0 || input2 != 0),
                     9 => i32::from(input1 != 0 && input2 != 0),
                     10 => input1.checked_rem(input2).unwrap_or_default(),
@@ -906,6 +935,9 @@ impl Entry {
                         .cast_signed(),
                     _ => input1,
                 };
+                if matches!(operation.get(), 3 | 10) && input2 == 0 {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
 
                 debug!(
                     "IntOp: {input1} {sign} {input2} = {result}",
@@ -925,11 +957,13 @@ impl Entry {
             } => {
                 let is_64_bit = *is_64_bit != I32::ZERO;
                 let format = state.get_string(format.get());
-                let formatted = if format.starts_with("0x") {
-                    format_compact!("{:#X}", input.get())
-                } else {
-                    input.get().to_compact_string()
-                };
+                let value = state.get_int64(input.get());
+                let formatted = super::int_fmt::format_integer(&format, value, is_64_bit)
+                    .unwrap_or_else(|| {
+                        warn!(%format, "Unsupported IntFmt format during static analysis");
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                        String::new()
+                    });
                 debug!("IntFmt{}: {formatted}", if is_64_bit { "64" } else { "" });
                 state
                     .variables
@@ -1158,11 +1192,25 @@ impl Entry {
                 let function = state.get_string(function.get());
 
                 if *display_text == I32::ZERO {
-                    if dll_file_name.ends_with("System.dll")
-                        && function == "Call"
-                        && let Some(call) = state.stack.pop()
+                    if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("System.dll"))
                     {
-                        state.mock_caller.call(&call);
+                        state.mock_caller.invoke(
+                            &function,
+                            &mut system::Context {
+                                variables: &mut state.variables,
+                                stack: &mut state.stack,
+                                flags: &mut state.exec_flags,
+                                registry: &mut state.registry,
+                                files: &mut state.file_system,
+                            },
+                        );
+                    } else if dll_file_name.ends_with("StdUtils.dll")
+                        && std_utils::call(&function, &mut state.stack)
+                    {
+                        debug!(%function, "Simulated StdUtils plugin call for default invocation");
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis
@@ -1175,6 +1223,11 @@ impl Entry {
                             state.stack.pop();
                         }
                         state.stack.push(Cow::Borrowed("success"));
+                        warn!(
+                            "NSISdl download success is assumed; external prerequisites were not downloaded or executed"
+                        );
+                    } else {
+                        warn!(%dll_file_name, %function, "Unmodeled installer plugin; subsequent state requires independent validation");
                     }
                     debug!(
                         "CallInstDLL: {dll_file_name} {function}{}",
@@ -1263,8 +1316,20 @@ impl Entry {
                 name,
                 value,
                 ini_file,
+                write_value,
             } => {
-                debug!("WriteIni: {section} {name} {value} {ini_file}");
+                let section = (section.get() != 0).then(|| state.get_string(section.get()));
+                let name = (name.get() != 0).then(|| state.get_string(name.get()));
+                let value = (write_value.get() != 0).then(|| state.get_string(value.get()));
+                let ini_file = state.get_string(ini_file.get());
+                debug!("WriteIni: {section:?} {name:?} {value:?} {ini_file}");
+                match state.ini_file(&ini_file, true) {
+                    Ok(ini) => ini.write(section.as_deref(), name.as_deref(), value.as_deref()),
+                    Err(error) => {
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                        warn!(%ini_file, %error, "Could not simulate INI write");
+                    }
+                }
             }
             Self::ReadIni {
                 output,
@@ -1276,6 +1341,21 @@ impl Entry {
                 let section = state.get_string(section.get());
                 let ini_file = state.get_string(ini_file.get());
                 debug!("ReadIni: {output} {name} {section} {ini_file}");
+                let value = match state.ini_file(&ini_file, false) {
+                    Ok(ini) => ini.get(&section, &name).map(str::to_owned),
+                    Err(error) => {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            warn!(%ini_file, %error, "Could not simulate INI read");
+                        }
+                        None
+                    }
+                };
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::DeleteReg {
                 reserved: _reserved,
@@ -1287,6 +1367,7 @@ impl Entry {
                 // https://github.com/NSIS-Dev/nsis/blob/v311/Source/exehead/exec.c#L1240
                 // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L4558
 
+                let root = state.registry_root(*root);
                 let key_name = state.get_string(key_name.get());
 
                 if *flags == I32::ZERO {
@@ -1298,9 +1379,13 @@ impl Entry {
                         debug!(r#"DeleteRegValue: "{root}\{key_name}" "{value_name}""#);
                     }
 
-                    state
+                    if state
                         .registry
-                        .remove_value_name(*root, &*key_name, &*value_name);
+                        .remove_value_name(root, &key_name, &value_name)
+                        .is_none()
+                    {
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    }
                 } else {
                     debug!(
                         r#"DeleteRegKey: {}"{root}\{key_name}""#,
@@ -1311,7 +1396,12 @@ impl Entry {
                         }
                     );
 
-                    state.registry.remove_key(*root, &*key_name);
+                    if !state
+                        .registry
+                        .delete_key(root, &key_name, flags.get() & 2 != 0)
+                    {
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    }
                 }
             }
             Self::WriteReg {
@@ -1324,6 +1414,7 @@ impl Entry {
             } => {
                 // https://github.com/NSIS-Dev/nsis/blob/v311/Source/exehead/exec.c#L1265
 
+                let root = state.registry_root(*root);
                 let key_name = state.get_string(key_name.get());
                 let value_name = state.get_string(value_name.get());
 
@@ -1340,17 +1431,18 @@ impl Entry {
 
                     state
                         .registry
-                        .insert_value(*root, key_name, value_name, value);
+                        .insert_value(root, key_name, value_name, value);
                 } else if r#type.is_dword() {
                     let value = state.get_int(value.get());
 
                     debug!(r#"WriteRegDWORD: "{root}\{key_name}" "{value_name}"="{value}""#);
 
-                    state.registry.insert_value(
-                        *root,
+                    state.registry.insert_typed(
+                        root,
                         key_name,
                         value_name,
                         value.to_compact_string(),
+                        RegType::DWord,
                     );
                 } else if r#type.is_binary() {
                     debug!(
@@ -1361,6 +1453,9 @@ impl Entry {
                             _ => "Bin",
                         }
                     );
+                    state
+                        .registry
+                        .insert_typed(root, key_name, value_name, "", *sub_type);
                 }
             }
             Self::ReadReg {
@@ -1370,14 +1465,36 @@ impl Entry {
                 value_name,
                 r#type,
             } => {
+                let root = state.registry_root(*root);
                 let key_name = state.get_string(key_name.get());
                 let value_name = state.get_string(value_name.get());
 
-                let output = state.get_int(output.get());
-                debug!(
-                    "ReadReg{}: {output} {root} {key_name} {value_name}",
-                    if r#type.get() == 1 { "Dword" } else { "Str" }
-                );
+                debug!("ReadReg: {output} {root} {key_name} {value_name}");
+                let kind = state.registry.value_type(root, &key_name, &value_name);
+                let value = state
+                    .registry
+                    .get_value(root, &key_name, &value_name)
+                    .filter(|_| {
+                        matches!(
+                            kind,
+                            Some(RegType::String | RegType::ExpandedString | RegType::DWord)
+                        )
+                    })
+                    .cloned();
+                let matches_type = if r#type.get() == 1 {
+                    kind == Some(RegType::DWord)
+                } else {
+                    matches!(kind, Some(RegType::String | RegType::ExpandedString))
+                };
+                if !matches_type {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::RegEnumKey {
                 output,
@@ -1386,7 +1503,23 @@ impl Entry {
                 index,
                 value,
             } => {
-                debug!("RegEnumKey: {output} {root_key} {key_name} {index} {value}");
+                let root = state.registry_root(*root_key);
+                let key = state.get_string(key_name.get());
+                let index = usize::try_from(state.get_int(index.get())).ok();
+                let name = index.and_then(|index| {
+                    if value.get() != 0 {
+                        state.registry.enum_subkey(root, &key, index)
+                    } else {
+                        state.registry.enum_value_name(root, &key, index)
+                    }
+                });
+                if !state.registry.key_exists(root, &key) || (value.get() == 0 && name.is_none()) {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                debug!("RegEnum: {root} {key} -> {:?}", name);
+                state
+                    .variables
+                    .insert(output.get() as usize, name.unwrap_or_default());
             }
             Self::FileClose { handle } => {
                 let handle = state.get_int(handle.get());
@@ -1450,26 +1583,53 @@ impl Entry {
                 );
             }
             Self::FindClose { handle } => {
+                let handle = state
+                    .variables
+                    .get(&(handle.get() as usize))
+                    .and_then(|value| value.parse::<i32>().ok())
+                    .unwrap_or_default();
+                state.find_handles.remove(&handle);
                 debug!("FindClose: {handle}");
             }
             Self::FindNext { output, handle } => {
-                let output = state
-                    .variables
-                    .get(&(output.get() as usize))
-                    .unwrap_or_default();
                 let handle = state
                     .variables
                     .get(&(handle.get() as usize))
                     .and_then(|handle| handle.parse::<i32>().ok())
                     .unwrap_or_default();
-                debug!("FindNext: {output} {handle}");
+                let name = state
+                    .find_handles
+                    .get_mut(&handle)
+                    .and_then(std::collections::VecDeque::pop_front);
+                if name.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                debug!("FindNext: {handle} -> {name:?}");
+                state
+                    .variables
+                    .insert(output.get() as usize, name.unwrap_or_default());
             }
             Self::FindFirst {
                 file_spec,
                 output,
                 handle_output,
             } => {
-                debug!("FindFirst: {file_spec} {output} {handle_output}");
+                let spec = state.get_string(file_spec.get());
+                let mut names: std::collections::VecDeque<_> = state.file_system.find(&spec).into();
+                let first = names.pop_front();
+                let handle = if first.is_some() {
+                    let handle = state.find_handles.keys().copied().max().unwrap_or_default() + 1;
+                    state.find_handles.insert(handle, names);
+                    handle.to_string()
+                } else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    String::new()
+                };
+                debug!("FindFirst: {spec} -> {first:?}");
+                state
+                    .variables
+                    .insert(output.get() as usize, first.unwrap_or_default());
+                state.variables.insert(handle_output.get() as usize, handle);
             }
             Self::WriteUninstaller {
                 name,
@@ -1501,7 +1661,7 @@ impl Entry {
                 state.file_system.create_file(
                     &*name,
                     None,
-                    offset.get().unsigned_abs(),
+                    state.file_position(offset.get()),
                     RelativeLocation::Current,
                 );
             }
@@ -1512,29 +1672,56 @@ impl Entry {
                 call_section_set_flags: _call_section_set_flags,
                 output_2,
             } => {
-                const SECTION_NAMES: [&str; 6] =
-                    ["Text", "InstTypes", "Flags", "Code", "CodeSize", "Size"];
-
-                let index = state.get_int(index.get());
-                if let Ok(r#type) = u32::try_from(r#type.get()) {
-                    debug!(
-                        "SectionGet{}: {index} {output}",
-                        SECTION_NAMES[r#type as usize]
-                    );
-                } else {
-                    let r#type = r#type.get().unsigned_abs() - 1;
-                    debug!(
-                        "SectionSet{}: {index} {}",
-                        SECTION_NAMES[r#type as usize],
-                        state.get_int(if r#type == 0 { output_2 } else { output }.get())
-                    );
+                let index = state.get_int(index.get()) as usize;
+                let Some(flags) = state.section_flags.get(index).copied() else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    return Ok(0);
+                };
+                // Flags occupy field 2 in NSIS's section struct; setters encode -(field+1).
+                match r#type.get() {
+                    2 => {
+                        state
+                            .variables
+                            .insert(output.get() as usize, flags.to_string());
+                    }
+                    -3 => {
+                        state.section_flags[index] = state.get_int(output.get());
+                    }
+                    _ => {
+                        debug!(
+                            "SectionSet: {index} {output} {type_} {output_2}",
+                            type_ = r#type.get()
+                        );
+                    }
                 }
             }
+
             Self::InstallerTypeSet { index } => {
                 debug!("InstallerTypeSet: {index}");
             }
-            Self::GetOSInfo => {
-                debug!("GetOSInfo");
+            Self::GetOSInfo {
+                output,
+                input,
+                operation,
+                ..
+            } => {
+                let input = state.get_string(input.get());
+                // WinCore.nsh and MultiUser.nsh define these per-user known folders.
+                let value = if operation.get() == 0 {
+                    system::known_folder_path(&input)
+                } else {
+                    None
+                };
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                    warn!(
+                        "Unsupported NSIS OS information operation {}: {input}",
+                        operation.get()
+                    );
+                }
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::ReservedOPCode => {
                 debug!("ReservedOPCode");

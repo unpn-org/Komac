@@ -6,6 +6,10 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, LE, U32};
 pub struct RegRoot(U32<LE>);
 
 impl RegRoot {
+    pub fn from_native(value: u32) -> Option<Self> {
+        matches!(value, 0x8000_0000..=0x8000_0006 | 0x8000_0050 | 0x8000_0060)
+            .then_some(Self::new(value))
+    }
     const REG_ROOT_VIEW_32: u32 = 0x4000_0000;
     const REG_ROOT_VIEW_64: u32 = 0x2000_0000;
     const REG_ROOT_VIEW_ANY: u32 = Self::REG_ROOT_VIEW_32 | Self::REG_ROOT_VIEW_64;
@@ -59,6 +63,25 @@ impl RegRoot {
     #[inline]
     const fn get(self) -> u32 {
         self.0.get()
+    }
+
+    /// Resolves `SHCTX` and the registry view selected by `SetRegView`.
+    pub fn resolve(self, all_users: bool, view: i32) -> Self {
+        let explicit_view = self.get() & Self::REG_ROOT_VIEW_ANY;
+        let mut root = self.get() & !Self::REG_ROOT_VIEW_ANY;
+        if root == 0 {
+            root = if all_users {
+                Self::HKEY_LOCAL_MACHINE.get()
+            } else {
+                Self::HKEY_CURRENT_USER.get()
+            };
+        }
+        let view = match explicit_view {
+            Self::REG_ROOT_VIEW_32 | Self::REG_ROOT_VIEW_64 => explicit_view,
+            _ if view == 0x100 => Self::REG_ROOT_VIEW_64,
+            _ => Self::REG_ROOT_VIEW_32,
+        };
+        Self::new(root | view)
     }
 
     pub fn is_current_user(self) -> bool {
@@ -142,5 +165,30 @@ impl Ord for RegRoot {
 impl PartialOrd for RegRoot {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_shell_context_and_explicit_registry_views() {
+        assert_eq!(
+            RegRoot::SHELL_CONTEXT.resolve(false, 0),
+            RegRoot::HKEY_CURRENT_USER32
+        );
+        assert_eq!(
+            RegRoot::SHELL_CONTEXT.resolve(true, 0x100),
+            RegRoot::HKEY_LOCAL_MACHINE64
+        );
+        assert_eq!(
+            RegRoot::HKEY_CURRENT_USER32.resolve(false, 0x100),
+            RegRoot::HKEY_CURRENT_USER32
+        );
+        assert_eq!(
+            RegRoot::HKEY_LOCAL_MACHINE_ANY.resolve(false, 0x100),
+            RegRoot::HKEY_LOCAL_MACHINE64
+        );
     }
 }
