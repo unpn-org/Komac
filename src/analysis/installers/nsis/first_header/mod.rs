@@ -55,6 +55,11 @@ impl FirstHeader {
         )
     }
 
+    /// Returns `true` if the installer starts in silent mode.
+    pub fn is_silent(&self) -> bool {
+        self.flags().contains(HeaderFlags::SILENT)
+    }
+
     #[inline]
     pub const fn flags(&self) -> HeaderFlags {
         self.flags
@@ -96,6 +101,24 @@ mod tests {
     use zerocopy::{ValidityError, try_transmute};
 
     use super::{FirstHeader, HeaderFlags};
+
+    #[test]
+    fn silent_mode_uses_the_first_header_flag() {
+        let mut bytes = [0; 28];
+        bytes[4..20].copy_from_slice(b"\xef\xbe\xad\xdeNullsoftInst");
+        bytes[0] = 2;
+        assert!(
+            FirstHeader::try_read_from_io(bytes.as_slice())
+                .unwrap()
+                .is_silent()
+        );
+        bytes[0] = 4;
+        assert!(
+            !FirstHeader::try_read_from_io(bytes.as_slice())
+                .unwrap()
+                .is_silent()
+        );
+    }
 
     #[test]
     fn first_header_size() {
