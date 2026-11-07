@@ -4,7 +4,7 @@ use std::{
     ops::Deref,
 };
 
-use super::{AnsiChar, AnsiStr, str::encode_char};
+use super::{AnsiChar, AnsiStr};
 
 /// An owned ANSI string, stored as raw Windows-1252 code units.
 #[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -75,7 +75,7 @@ impl AnsiString {
     /// Appends a [`char`], encoding it as Windows-1252 or `?` if it is not representable.
     #[inline]
     pub fn push_char(&mut self, char: char) {
-        self.0.push(encode_char(char));
+        self.push_str(char.encode_utf8(&mut [0; 4]));
     }
 
     /// Appends an [`AnsiStr`] to the end of the string.
@@ -89,7 +89,8 @@ impl AnsiString {
         if string.is_ascii() {
             self.0.extend_from_slice(string.as_bytes());
         } else {
-            self.0.extend(string.chars().map(encode_char));
+            self.0
+                .extend(crate::analysis::installers::nsis::codepage::encode(string));
         }
     }
 
