@@ -230,30 +230,20 @@ impl<'data> NsisState<'data> {
     }
 
     pub fn get_int(&self, relative_offset: i32) -> i32 {
-        const HEX_START: &str = "0x";
+        parse_int(&self.get_string(relative_offset))
+    }
 
-        let mut value = &*self.get_string(relative_offset);
-
-        let radix = if value
-            .get(..HEX_START.len())
-            .is_some_and(|start| start.eq_ignore_ascii_case(HEX_START))
-        {
-            value = &value[HEX_START.len()..];
-            16
-        } else {
-            10
-        };
-
-        i32::from_str_radix(value, radix).unwrap_or_default()
+    pub fn get_int64(&self, relative_offset: i32) -> i64 {
+        parse_int64(&self.get_string(relative_offset))
     }
 
     /// Execute a NSIS code section.
     ///
     /// <https://github.com/NSIS-Dev/nsis/blob/v311/Source/exehead/exec.c#L79>
-    pub fn execute_code_segment(&mut self, mut position: i32) -> Result<Entry, EntryError> {
-        // Reset file system directory to root
-        self.file_system.set_root();
-
+    pub fn execute_code_segment(&mut self, position: i32) -> Result<Entry, EntryError> {
+        let mut position = position;
+        let mut calls = Vec::new();
+        let mut total_steps = 0usize;
         // Create a watchdog counter to detect infinite loops
         let mut watchdog_counter = 0;
 
@@ -262,13 +252,39 @@ impl<'data> NsisState<'data> {
         let infinite_loop_threshold = self.entries.len();
 
         while let Ok(index) = usize::try_from(position) {
+            total_steps += 1;
+            if total_steps > self.entries.len().saturating_mul(128).max(128) {
+                return Err(EntryError::InfiniteLoop);
+            }
             let span = debug_span!("", "{}", index + 1);
             let _enter = span.enter();
 
-            let entry = self.entries[index];
+            let entry = *self.entries.get(index).ok_or(EntryError::Invalid)?;
+            // Interpret calls using an explicit stack: recursive Rust calls can overflow
+            // before the loop watchdog has an opportunity to run.
+            if let Entry::Call { address } = entry {
+                if calls.len() >= 128 {
+                    return Err(EntryError::InfiniteLoop);
+                }
+                calls.push((position + 1, watchdog_counter));
+                position = self
+                    .resolve_address(address.get())?
+                    .checked_sub(1)
+                    .ok_or(EntryError::Invalid)?;
+                watchdog_counter = 0;
+                continue;
+            }
             let address = entry.execute(self)?;
 
-            if matches!(entry, Entry::Return | Entry::Quit) {
+            if entry == Entry::Quit {
+                return Ok(entry);
+            }
+            if entry == Entry::Return {
+                if let Some((return_position, counter)) = calls.pop() {
+                    position = return_position;
+                    watchdog_counter = counter + 1;
+                    continue;
+                }
                 return Ok(entry);
             }
 
@@ -276,7 +292,7 @@ impl<'data> NsisState<'data> {
                 return Err(EntryError::InfiniteLoop);
             }
 
-            let resolved_address = self.resolve_address(address);
+            let resolved_address = self.resolve_address(address)?;
             if resolved_address == 0 {
                 position += 1;
             } else {
@@ -289,15 +305,52 @@ impl<'data> NsisState<'data> {
         Ok(Entry::Return)
     }
 
-    pub fn resolve_address(&self, address: i32) -> i32 {
+    pub fn resolve_address(&self, address: i32) -> Result<i32, EntryError> {
         if address.is_negative() {
             self.variables
                 .get(&((address.unsigned_abs() - 1) as usize))
-                .and_then(|address| address.parse().ok())
-                .unwrap()
+                .map(parse_int)
+                .filter(|&address| address > 0)
+                .ok_or(EntryError::Invalid)
         } else {
-            address
+            Ok(address)
         }
+    }
+}
+
+/// NSIS strtoiptr/myatoi accepts hexadecimal and octal, stops at the first
+/// non-digit, and wraps arithmetic. Script integer operations use the low 32 bits.
+pub(super) fn parse_int(value: &str) -> i32 {
+    parse_int64(value) as i32
+}
+
+pub(super) fn parse_int64(value: &str) -> i64 {
+    let (negative, mut value) = value
+        .strip_prefix('-')
+        .map_or((false, value), |s| (true, s));
+    let mut radix = 10u32;
+    if let Some(rest) = value.strip_prefix('0') {
+        value = rest;
+        if matches!(value.as_bytes().first(), Some(b'0'..=b'7')) {
+            radix = 8;
+        } else if value.starts_with(['x', 'X']) {
+            radix = 16;
+            value = &value[1..];
+        }
+    }
+    let mut result = 0u64;
+    for digit in value.chars() {
+        let Some(digit) = digit.to_digit(radix) else {
+            break;
+        };
+        result = result
+            .wrapping_mul(u64::from(radix))
+            .wrapping_add(u64::from(digit));
+    }
+    if negative {
+        result.wrapping_neg() as i64
+    } else {
+        result as i64
     }
 }
 
@@ -364,4 +417,72 @@ mod tests {
         assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
     }
 
+    #[test]
+    fn integer_literals_follow_nsis_conversion() {
+        for (input, expected) in [
+            ("0xFFFFFFFF", -1),
+            ("4294967295", -1),
+            ("4294967296", 0),
+            ("010", 8),
+            ("08", 8),
+            ("-0x10", -16),
+            ("12suffix", 12),
+            ("+7", 0),
+            (" 7", 0),
+            ("", 0),
+        ] {
+            assert_eq!(parse_int(input), expected, "{input}");
+        }
+        assert_eq!(parse_int64("4294967296"), 4294967296);
+        assert_eq!(parse_int64("0xffffffffffffffff"), -1);
+    }
+
+    #[test]
+    fn integer_comparison_uses_its_encoded_width_and_signedness() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0-4294967296\0-1\0", &[], &mut read);
+        let entry = |flags| Entry::IntCmp {
+            val_1: I32::new(1),
+            val_2: I32::new(13),
+            equal: I32::new(1),
+            val1_lt_val2: I32::new(2),
+            val1_gt_val2: I32::new(3),
+            flags: I32::new(flags),
+        };
+        assert_eq!(entry(0x8000).execute(&mut state), Ok(2));
+        assert_eq!(entry(0).execute(&mut state), Ok(3));
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_instructions() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let entries = [Entry::Jump {
+            address: I32::new(100),
+        }];
+        assert_eq!(
+            state(b"\0", &entries, &mut read).execute_code_segment(0),
+            Err(EntryError::Invalid)
+        );
+    }
+
+    #[test]
+    fn bounds_recursive_calls() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let entries = [Entry::Call {
+            address: I32::new(1),
+        }];
+        assert_eq!(
+            state(b"\0", &entries, &mut read).execute_code_segment(0),
+            Err(EntryError::InfiniteLoop)
+        );
+    }
+
+    #[test]
+    fn handles_unset_indirect_address() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        assert_eq!(
+            state(b"\0", &[], &mut read).resolve_address(-1),
+            Err(EntryError::Invalid)
+        );
+    }
 }
