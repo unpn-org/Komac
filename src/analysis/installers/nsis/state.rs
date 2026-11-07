@@ -41,9 +41,9 @@ pub struct NsisState<'data> {
     pub last_used_exec_flags: ExecFlags,
     pub status_up_hack: I32<LE>,
     pub mock_caller: MockCaller,
-    pub section_flags: Vec<i32>,
     version: NsisVersion,
     string_version: NsisVersion,
+    pub section_flags: Vec<i32>,
     file_positions: Vec<Option<u64>>,
     entry_index: usize,
 }
@@ -66,21 +66,21 @@ impl<'data> NsisState<'data> {
             registry: Registry::new(),
             file_system: FileSystem::new(),
             files: Files::default(),
-            find_handles: HashMap::new(),
             ini_files: HashMap::new(),
+            find_handles: HashMap::new(),
             exec_flags: ExecFlags::new(),
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
             mock_caller: MockCaller::new(),
+            version: NsisVersion::default(),
+            string_version: NsisVersion::default(),
+            file_positions: Vec::new(),
+            entry_index: 0,
             section_flags: header
                 .blocks()
                 .sections(data)
                 .map(|section| section.flags())
                 .collect(),
-            version: NsisVersion::default(),
-            string_version: NsisVersion::default(),
-            file_positions: Vec::new(),
-            entry_index: 0,
         };
 
         state.variables.insert(
@@ -481,60 +481,6 @@ mod tests {
     use super::*;
     use crate::analysis::installers::nsis::{entry::ExecFlag, registry::RegRoot};
 
-    fn state<'a>(
-        strings: &'a [u8],
-        entries: &'a [Entry],
-        read_file: &'a mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
-    ) -> NsisState<'a> {
-        // One language string referring to offset 1.
-        let language_table =
-            LanguageTable::ref_from_bytes(&[9, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]).unwrap();
-        NsisState {
-            read_file,
-            str_block: strings,
-            entries: Cow::Borrowed(entries),
-            language_table,
-            stack: Vec::new(),
-            variables: Variables::new(),
-            registry: Registry::new(),
-            file_system: FileSystem::new(),
-            files: Files::default(),
-            find_handles: HashMap::new(),
-            ini_files: HashMap::new(),
-            exec_flags: ExecFlags::new(),
-            last_used_exec_flags: ExecFlags::new(),
-            status_up_hack: I32::ZERO,
-            mock_caller: MockCaller::new(),
-            section_flags: Vec::new(),
-            version: NsisVersion::v3(),
-            string_version: NsisVersion::v3(),
-            file_positions: Vec::new(),
-            entry_index: 0,
-        }
-    }
-    #[test]
-    fn registry_reads_replace_or_clear_the_output_register() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        let mut state = state(b"\0Key\0Version\0", &[], &mut read);
-        state
-            .registry
-            .insert_value(RegRoot::HKEY_CURRENT_USER, "Key", "Version", "1.2.3");
-        let entry = Entry::ReadReg {
-            output: I32::new(0),
-            root: RegRoot::HKEY_CURRENT_USER,
-            key_name: I32::new(1),
-            value_name: I32::new(5),
-            r#type: I32::ZERO,
-        };
-        state.variables.insert(0, "stale");
-        entry.execute(&mut state).unwrap();
-        assert_eq!(state.variables.get(&0), Some("1.2.3"));
-        state.registry.remove_key(RegRoot::HKEY_CURRENT_USER, "Key");
-        entry.execute(&mut state).unwrap();
-        assert_eq!(state.variables.get(&0), Some(""));
-        assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
-    }
-
     #[test]
     fn integer_literals_follow_nsis_conversion() {
         for (input, expected) in [
@@ -571,75 +517,72 @@ mod tests {
         assert_eq!(entry(0).execute(&mut state), Ok(3));
     }
 
+    fn state<'a>(
+        strings: &'a [u8],
+        entries: &'a [Entry],
+        read_file: &'a mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
+    ) -> NsisState<'a> {
+        // One language string referring to offset 1.
+        let language_table =
+            LanguageTable::ref_from_bytes(&[9, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]).unwrap();
+        NsisState {
+            read_file,
+            str_block: strings,
+            entries: Cow::Borrowed(entries),
+            language_table,
+            stack: Vec::new(),
+            variables: Variables::new(),
+            registry: Registry::new(),
+            file_system: FileSystem::new(),
+            files: Files::default(),
+            ini_files: HashMap::new(),
+            find_handles: HashMap::new(),
+            exec_flags: ExecFlags::new(),
+            last_used_exec_flags: ExecFlags::new(),
+            status_up_hack: I32::ZERO,
+            mock_caller: MockCaller::new(),
+            version: NsisVersion::v3(),
+            string_version: NsisVersion::v3(),
+            file_positions: Vec::new(),
+            entry_index: 0,
+            section_flags: Vec::new(),
+        }
+    }
+
     #[test]
-    fn rejects_out_of_bounds_instructions() {
+    fn window_queries_replace_stale_values_and_message_boxes_take_the_default_branch() {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
-        let entries = [Entry::Jump {
-            address: I32::new(100),
-        }];
+        let mut state = state(b"\0AppWindow\0Continue?\0", &[], &mut read);
+        state.variables.insert(0, "1");
+        state.exec_flags[ExecFlag::Errors] = I32::new(7);
+        Entry::FindWindow {
+            output: I32::ZERO,
+            window_class: I32::new(1),
+            window_name: I32::ZERO,
+            window_parent: I32::ZERO,
+            window_after: I32::ZERO,
+        }
+        .execute(&mut state)
+        .unwrap();
+        assert_eq!(state.variables.get(&0), Some("0"));
+        assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 7);
         assert_eq!(
-            state(b"\0", &entries, &mut read).execute_code_segment(0),
-            Err(EntryError::Invalid)
+            Entry::IsWindow {
+                window_handle: I32::ZERO,
+                jump_if_window: I32::new(100),
+                jump_if_not_window: I32::new(200),
+            }
+            .execute(&mut state),
+            Ok(200)
         );
+        let raw: Vec<_> = [22i32, 4, 11, 7, 100, 6, 200]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        let message = Entry::try_read_from_bytes(&raw).unwrap();
+        assert_eq!(message.execute(&mut state), Ok(200));
     }
 
-    #[test]
-    fn bounds_recursive_calls() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        let entries = [Entry::Call {
-            address: I32::new(1),
-        }];
-        assert_eq!(
-            state(b"\0", &entries, &mut read).execute_code_segment(0),
-            Err(EntryError::InfiniteLoop)
-        );
-    }
-
-    #[test]
-    fn handles_unset_indirect_address() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        assert_eq!(
-            state(b"\0", &[], &mut read).resolve_address(-1),
-            Err(EntryError::Invalid)
-        );
-    }
-    #[test]
-    fn decodes_park_variable_parameters() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        let mut state = state(b"\0\0\x01\xe0\x00\x80\0\0", &[], &mut read);
-        state.version = NsisVersion::detect(state.str_block);
-        // Two Park code points are needed for automatic detection.
-        state.version = NsisVersion::from_manifest("<assembly><description>Nullsoft Install System v2.46.5-Unicode</description></assembly>").unwrap();
-        state.string_version = state.version;
-        state.variables.insert(0, "App");
-        assert_eq!(state.get_string(1), "App");
-    }
-
-    #[test]
-    fn advertised_version_does_not_replace_observed_string_encoding() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        let mut state = state(b"\0\0\x03\0\x80\x80\0\0", &[], &mut read);
-        state.version = NsisVersion::new(2, 46);
-        state.variables.insert(0, "App");
-        assert_eq!(state.get_string(1), "App");
-    }
-
-    #[test]
-    fn handles_truncated_and_unterminated_strings() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        assert_eq!(state(b"", &[], &mut read).get_string(0), "");
-        assert_eq!(state(b"\0tail", &[], &mut read).get_string(1), "tail");
-        assert_eq!(state(b"\0\0t\0", &[], &mut read).get_string(1), "t");
-        assert_eq!(state(b"\0\0t", &[], &mut read).get_string(1), "$ERROR");
-        assert_eq!(state(b"\0", &[], &mut read).get_string(i32::MAX), "$ERROR");
-    }
-
-    #[test]
-    fn bounds_recursive_language_strings() {
-        let mut read = |_| Ok(Cursor::new(Vec::new()));
-        let state = state(b"\0\0\x01\0\x80\x80\0\0", &[], &mut read);
-        assert_eq!(state.get_string(1), "$ERROR");
-    }
     #[test]
     fn missing_file_reads_clear_stale_metadata_and_signal_errors() {
         let mut read = |_| Err(io::ErrorKind::NotFound.into());
@@ -668,6 +611,30 @@ mod tests {
         assert_eq!(state.variables.get(&1), Some(""));
         assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
     }
+
+    #[test]
+    fn registry_reads_replace_or_clear_the_output_register() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0Key\0Version\0", &[], &mut read);
+        state
+            .registry
+            .insert_value(RegRoot::HKEY_CURRENT_USER, "Key", "Version", "1.2.3");
+        let entry = Entry::ReadReg {
+            output: I32::new(0),
+            root: RegRoot::HKEY_CURRENT_USER,
+            key_name: I32::new(1),
+            value_name: I32::new(5),
+            r#type: I32::ZERO,
+        };
+        state.variables.insert(0, "stale");
+        entry.execute(&mut state).unwrap();
+        assert_eq!(state.variables.get(&0), Some("1.2.3"));
+        state.registry.remove_key(RegRoot::HKEY_CURRENT_USER, "Key");
+        entry.execute(&mut state).unwrap();
+        assert_eq!(state.variables.get(&0), Some(""));
+        assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
+    }
+
     #[test]
     fn account_type_plugins_preserve_saved_registers_on_the_stack() {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
@@ -745,6 +712,77 @@ mod tests {
         assert_eq!(
             state.get_string(name),
             "Firefox Developer Edition (x64 gu-IN)"
+        );
+    }
+
+    #[test]
+    fn decodes_park_variable_parameters() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0\0\x01\xe0\x00\x80\0\0", &[], &mut read);
+        state.version = NsisVersion::detect(state.str_block);
+        // Two Park code points are needed for automatic detection.
+        state.version = NsisVersion::from_manifest("<assembly><description>Nullsoft Install System v2.46.5-Unicode</description></assembly>").unwrap();
+        state.string_version = state.version;
+        state.variables.insert(0, "App");
+        assert_eq!(state.get_string(1), "App");
+    }
+
+    #[test]
+    fn advertised_version_does_not_replace_observed_string_encoding() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0\0\x03\0\x80\x80\0\0", &[], &mut read);
+        state.version = NsisVersion::new(2, 46);
+        state.variables.insert(0, "App");
+        assert_eq!(state.get_string(1), "App");
+    }
+
+    #[test]
+    fn handles_truncated_and_unterminated_strings() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        assert_eq!(state(b"", &[], &mut read).get_string(0), "");
+        assert_eq!(state(b"\0tail", &[], &mut read).get_string(1), "tail");
+        assert_eq!(state(b"\0\0t\0", &[], &mut read).get_string(1), "t");
+        assert_eq!(state(b"\0\0t", &[], &mut read).get_string(1), "$ERROR");
+        assert_eq!(state(b"\0", &[], &mut read).get_string(i32::MAX), "$ERROR");
+    }
+
+    #[test]
+    fn bounds_recursive_language_strings() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let state = state(b"\0\0\x01\0\x80\x80\0\0", &[], &mut read);
+        assert_eq!(state.get_string(1), "$ERROR");
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_instructions() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let entries = [Entry::Jump {
+            address: I32::new(100),
+        }];
+        assert_eq!(
+            state(b"\0", &entries, &mut read).execute_code_segment(0),
+            Err(EntryError::Invalid)
+        );
+    }
+
+    #[test]
+    fn bounds_recursive_calls() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let entries = [Entry::Call {
+            address: I32::new(1),
+        }];
+        assert_eq!(
+            state(b"\0", &entries, &mut read).execute_code_segment(0),
+            Err(EntryError::InfiniteLoop)
+        );
+    }
+
+    #[test]
+    fn handles_unset_indirect_address() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        assert_eq!(
+            state(b"\0", &[], &mut read).resolve_address(-1),
+            Err(EntryError::Invalid)
         );
     }
 }
