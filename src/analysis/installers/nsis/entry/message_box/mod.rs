@@ -1,5 +1,3 @@
-#![expect(unused)]
-
 mod buttons;
 mod icon;
 
@@ -63,6 +61,27 @@ impl MessageBoxFlags {
     pub const fn icon(self) -> Option<Icon> {
         Icon::new(self)
     }
+
+    /// Returns the configured silent response or the visible default button.
+    pub fn default_response(self, silent: bool) -> Option<i32> {
+        let silent_response = (self.flags() as u32 >> 21) as i32;
+        if silent && silent_response != 0 {
+            return Some(silent_response);
+        }
+        let buttons: &[i32] = match self.buttons_flags() {
+            0 => &[1],
+            1 => &[1, 2],
+            2 => &[3, 4, 5],
+            3 => &[6, 7, 2],
+            4 => &[6, 7],
+            5 => &[4, 2],
+            6 => &[2, 10, 11],
+            _ => return None,
+        };
+        buttons
+            .get((self.default_button_flags() >> 8) as usize)
+            .copied()
+    }
 }
 
 impl fmt::Display for MessageBoxFlags {
@@ -86,5 +105,30 @@ impl From<i32> for MessageBoxFlags {
     #[inline]
     fn from(flags: i32) -> Self {
         Self::new(flags)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_buttons_and_silent_overrides_are_distinct() {
+        assert_eq!(MessageBoxFlags::from(4).default_response(false), Some(6));
+        assert_eq!(
+            MessageBoxFlags::from(4 | 0x100).default_response(false),
+            Some(7)
+        );
+        assert_eq!(
+            MessageBoxFlags::from(3 | 0x200).default_response(false),
+            Some(2)
+        );
+        let flags = MessageBoxFlags::from(4 | (7 << 21));
+        assert_eq!(flags.default_response(false), Some(6));
+        assert_eq!(flags.default_response(true), Some(7));
+        assert_eq!(
+            MessageBoxFlags::from(4 | 0x300).default_response(false),
+            None
+        );
     }
 }

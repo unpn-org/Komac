@@ -153,6 +153,10 @@ pub enum Entry {
     MessageBox {
         mb_flags: MessageBoxFlags,
         text: I32<LE>,
+        response_1: I32<LE>,
+        jump_1: I32<LE>,
+        response_2: I32<LE>,
+        jump_2: I32<LE>,
     } = 22u32.to_le(),
     RemoveDir {
         path: I32<LE>,
@@ -746,9 +750,32 @@ impl Entry {
                     state.exec_flags[ExecFlag::Errors] = I32::new(1);
                 }
             }
-            Self::MessageBox { mb_flags, text } => {
+            Self::MessageBox {
+                mb_flags,
+                text,
+                response_1,
+                jump_1,
+                response_2,
+                jump_2,
+            } => {
                 let text = state.get_string(text.get());
                 debug!(r#"MessageBox {mb_flags} "{text}""#);
+                let response =
+                    mb_flags.default_response(state.exec_flags[ExecFlag::Silent].get() != 0);
+                if let Some(response) = response {
+                    warn!(
+                        response,
+                        "MessageBox selects its default button; interactive installation choices require independent validation"
+                    );
+                    if response == response_1.get() {
+                        return Ok(jump_1.get());
+                    }
+                    if response == response_2.get() {
+                        return Ok(jump_2.get());
+                    }
+                } else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
             }
             Self::RemoveDir { path, flags } => {
                 let path = state.get_string(path.get());
@@ -1043,7 +1070,7 @@ impl Entry {
                 }
             }
             Self::FindWindow {
-                output: _output,
+                output,
                 window_class,
                 window_name,
                 window_parent,
@@ -1054,6 +1081,10 @@ impl Entry {
                     state.get_string(window_class.get()),
                     state.get_string(window_name.get()),
                     state.get_string(window_parent.get())
+                );
+                state.variables.insert(output.get() as usize, "0");
+                warn!(
+                    "FindWindow uses an empty external window list; window-dependent metadata requires independent validation"
                 );
             }
             Self::SendMessage {
@@ -1085,6 +1116,11 @@ impl Entry {
                 debug!(
                     "IsWindow: {window_handle} window: {jump_if_window} not_window: {jump_if_not_window}"
                 );
+                let handle = state.get_string(window_handle.get());
+                if handle.is_empty() || handle == "0" {
+                    return Ok(jump_if_not_window.get());
+                }
+                warn!(%handle, "IsWindow requires validation of an external or installer UI window");
             }
             Self::GetDialogItem {
                 output: _output,
