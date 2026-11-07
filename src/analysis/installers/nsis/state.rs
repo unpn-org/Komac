@@ -15,6 +15,7 @@ use super::{
 };
 use crate::analysis::installers::nsis::{
     NsisError,
+    file_io::Files,
     file_system::FileSystem,
     header::Header,
     language::table::LanguageTable,
@@ -33,6 +34,7 @@ pub struct NsisState<'data> {
     pub variables: Variables<'data>,
     pub registry: Registry,
     pub file_system: FileSystem,
+    pub files: Files,
     pub ini_files: HashMap<indextree::NodeId, super::ini::IniFile>,
     pub find_handles: HashMap<i32, VecDeque<String>>,
     pub exec_flags: ExecFlags,
@@ -63,6 +65,7 @@ impl<'data> NsisState<'data> {
             variables: Variables::new(),
             registry: Registry::new(),
             file_system: FileSystem::new(),
+            files: Files::default(),
             find_handles: HashMap::new(),
             ini_files: HashMap::new(),
             exec_flags: ExecFlags::new(),
@@ -331,12 +334,10 @@ impl<'data> NsisState<'data> {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         };
         if !self.ini_files.contains_key(&id) {
-            let position = self
-                .file_system
-                .get(path, RelativeLocation::Current)
-                .and_then(|file| file.position())
+            let bytes = self
+                .files
+                .bytes(id, self.read_file)
                 .ok_or_else(|| io::Error::other("INI file contents are unavailable"))?;
-            let bytes = (self.read_file)(position)?.into_inner();
             if bytes.len() > 8 * 1024 * 1024 {
                 return Err(io::Error::other("INI file exceeds simulation limit"));
             }
@@ -497,6 +498,7 @@ mod tests {
             variables: Variables::new(),
             registry: Registry::new(),
             file_system: FileSystem::new(),
+            files: Files::default(),
             find_handles: HashMap::new(),
             ini_files: HashMap::new(),
             exec_flags: ExecFlags::new(),
@@ -637,5 +639,33 @@ mod tests {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
         let state = state(b"\0\0\x01\0\x80\x80\0\0", &[], &mut read);
         assert_eq!(state.get_string(1), "$ERROR");
+    }
+    #[test]
+    fn missing_file_reads_clear_stale_metadata_and_signal_errors() {
+        let mut read = |_| Err(io::ErrorKind::NotFound.into());
+        let mut state = state(b"\0missing.txt\08191\0", &[], &mut read);
+        state.variables.insert(0, "1610612752");
+        state.variables.insert(1, "1610612752");
+        let bytes: Vec<_> = [55i32, 0, i32::MIN, 3, 1, 0, 0]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        Entry::try_read_from_bytes(&bytes)
+            .unwrap()
+            .execute(&mut state)
+            .unwrap();
+        assert_eq!(state.variables.get(&0), Some(""));
+        assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
+        state.exec_flags[ExecFlag::Errors] = I32::ZERO;
+        Entry::FileReadUTF16LE {
+            handle: I32::ZERO,
+            output: I32::new(1),
+            max_length: I32::new(13),
+            get_char_gets: I32::ZERO,
+        }
+        .execute(&mut state)
+        .unwrap();
+        assert_eq!(state.variables.get(&1), Some(""));
+        assert_eq!(state.exec_flags[ExecFlag::Errors].get(), 1);
     }
 }

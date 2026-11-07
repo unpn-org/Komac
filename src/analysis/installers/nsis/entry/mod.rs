@@ -340,10 +340,10 @@ pub enum Entry {
         handle: I32<LE>,
     } = 54u32.to_le(),
     FileOpen {
-        name: I32<LE>,
+        output_handle: I32<LE>,
         open_mode: GenericAccessRights,
         create_mode: CreationDisposition,
-        output_handle: I32<LE>,
+        name: I32<LE>,
     } = 55u32.to_le(),
     FileWrite {
         handle: I32<LE>,
@@ -358,8 +358,8 @@ pub enum Entry {
     } = 57u32.to_le(),
     FileSeek {
         handle: I32<LE>,
+        output: I32<LE>,
         offset: I32<LE>,
-        mode: I32<LE>,
         seek_from: SeekFrom,
     } = 58u32.to_le(),
     FindClose {
@@ -405,6 +405,7 @@ pub enum Entry {
         handle: I32<LE>,
         string: I32<LE>,
         int_or_string: I32<LE>,
+        bom: I32<LE>,
     } = 68u32.to_le(),
     FileReadUTF16LE {
         handle: I32<LE>,
@@ -720,12 +721,16 @@ impl Entry {
                     }
                     date
                 };
-                state.file_system.create_file(
-                    &*name,
-                    date,
-                    state.file_position(position.get()),
-                    RelativeLocation::Current,
-                );
+                let position = state.file_position(position.get());
+                if let Some(file) =
+                    state
+                        .file_system
+                        .create_file(&*name, date, position, RelativeLocation::Current)
+                {
+                    if let Some(position) = position.checked_add(4) {
+                        state.files.register(file, position);
+                    }
+                }
             }
             Self::DeleteFile { filename, flags } => {
                 let filename = state.get_string(filename.get());
@@ -1506,7 +1511,12 @@ impl Entry {
                     .insert(output.get() as usize, name.unwrap_or_default());
             }
             Self::FileClose { handle } => {
-                let handle = state.get_int(handle.get());
+                let handle = state
+                    .variables
+                    .get(&(handle.get() as usize))
+                    .map(super::state::parse_int)
+                    .unwrap_or_default();
+                state.files.close(handle);
                 debug!("FileClose: {handle}");
             }
             Self::FileOpen {
@@ -1515,56 +1525,152 @@ impl Entry {
                 create_mode,
                 output_handle,
             } => {
-                // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L4688
-                let name = state
-                    .variables
-                    .get(&(name.get() as usize))
-                    .unwrap_or_default();
-                let output_handle = state.get_string(output_handle.get());
-                let open_option = match (*create_mode, *open_mode) {
-                    (CreationDisposition::OpenExisting, GenericAccessRights::GENERIC_READ) => {
-                        "READ"
-                    }
-                    (CreationDisposition::CreateAlways, GenericAccessRights::GENERIC_WRITE) => {
-                        "WRITE"
-                    }
-                    (
-                        CreationDisposition::OpenAlways,
-                        GenericAccessRights::GENERIC_WRITE | GenericAccessRights::GENERIC_READ,
-                    ) => "APPEND",
-                    _ => "",
+                let name = state.get_string(name.get());
+                let existing = state.file_system.get_id(&*name, RelativeLocation::Current);
+                let exists = state
+                    .file_system
+                    .get(&*name, RelativeLocation::Current)
+                    .is_some_and(|file| file.is_file());
+                let create = matches!(
+                    create_mode,
+                    CreationDisposition::CreateNew
+                        | CreationDisposition::CreateAlways
+                        | CreationDisposition::OpenAlways
+                );
+                let truncate = matches!(
+                    create_mode,
+                    CreationDisposition::CreateAlways | CreationDisposition::TruncateExisting
+                );
+                let readable = open_mode.intersects(
+                    GenericAccessRights::GENERIC_READ | GenericAccessRights::GENERIC_ALL,
+                );
+                let writable = open_mode.intersects(
+                    GenericAccessRights::GENERIC_WRITE | GenericAccessRights::GENERIC_ALL,
+                );
+                let valid = !(existing.is_some() && !exists)
+                    && !(*create_mode == CreationDisposition::CreateNew && exists)
+                    && (exists || create)
+                    && (!truncate || writable);
+                let handle = if valid {
+                    let file = existing.or_else(|| {
+                        state
+                            .file_system
+                            .create_file(&*name, None, 0u64, RelativeLocation::Current)
+                    });
+                    file.and_then(|file| {
+                        state
+                            .files
+                            .open(file, readable, writable, truncate || !exists)
+                    })
+                } else {
+                    None
                 };
-                debug!(r#"FileOpen: "{name}" {output_handle} {open_option}"#);
+                debug!(%name, ?handle, "FileOpen");
+                if handle.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                state.variables.insert(
+                    output_handle.get() as usize,
+                    handle.map(|handle| handle.to_string()).unwrap_or_default(),
+                );
             }
             Self::FileWrite {
                 handle,
                 string,
                 int_or_string,
+            }
+            | Self::FileWriteUTF16LE {
+                handle,
+                string,
+                int_or_string,
+                ..
             } => {
-                debug!("FileWrite: {handle} {string} {int_or_string}");
+                let wide = matches!(self, Self::FileWriteUTF16LE { .. });
+                let bom = matches!(self, Self::FileWriteUTF16LE { bom, .. } if bom.get() != 0 && int_or_string.get() == 0);
+                let handle = state
+                    .variables
+                    .get(&(handle.get() as usize))
+                    .map(super::state::parse_int)
+                    .unwrap_or_default();
+                let value = state.get_string(string.get());
+                let bytes = if int_or_string.get() != 0 {
+                    let value = super::state::parse_int(&value) as u16;
+                    if wide {
+                        value.to_le_bytes().to_vec()
+                    } else {
+                        vec![value as u8]
+                    }
+                } else if wide {
+                    value.encode_utf16().flat_map(u16::to_le_bytes).collect()
+                } else {
+                    super::codepage::encode(&value)
+                };
+                if let Some(file) = state.files.write(handle, &bytes, bom, state.read_file) {
+                    state.ini_files.remove(&file);
+                } else {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                debug!(handle, wide, "FileWrite");
             }
             Self::FileRead {
                 handle,
                 output,
                 max_length,
                 get_char_gets,
+            }
+            | Self::FileReadUTF16LE {
+                handle,
+                output,
+                max_length,
+                get_char_gets,
             } => {
-                debug!("FileRead: {handle} {output} {max_length} {get_char_gets}");
+                let maximum = state.get_int(max_length.get());
+                if maximum < 1 {
+                    return Ok(0);
+                }
+                let handle = state
+                    .variables
+                    .get(&(handle.get() as usize))
+                    .map(super::state::parse_int)
+                    .unwrap_or_default();
+                let wide = matches!(self, Self::FileReadUTF16LE { .. });
+                let value = state.files.read(
+                    handle,
+                    wide,
+                    get_char_gets.get() != 0,
+                    maximum as usize,
+                    state.read_file,
+                );
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                debug!(handle, wide, ?value, "FileRead");
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::FileSeek {
                 handle,
+                output,
                 offset,
-                mode,
                 seek_from,
             } => {
                 let handle = state
                     .variables
                     .get(&(handle.get() as usize))
+                    .map(super::state::parse_int)
                     .unwrap_or_default();
-                debug!(
-                    "FileSeek: {handle} {} {seek_from} {offset}",
-                    state.get_int(mode.get())
-                );
+                let offset = state.get_int(offset.get());
+                let position = state
+                    .files
+                    .seek(handle, offset, *seek_from as u32, state.read_file);
+                if output.get() >= 0 {
+                    state.variables.insert(
+                        output.get() as usize,
+                        position.map_or_else(|| "-1".to_owned(), |value| value.to_string()),
+                    );
+                }
+                debug!(handle, offset, ?position, "FileSeek");
             }
             Self::FindClose { handle } => {
                 let handle = state
@@ -1694,21 +1800,6 @@ impl Entry {
                     "LockWindow: {}",
                     if *on_off == I32::ZERO { "on" } else { "off" }
                 );
-            }
-            Self::FileWriteUTF16LE {
-                handle,
-                string,
-                int_or_string,
-            } => {
-                debug!("FileWriteUTF16LE: {handle} {string} {int_or_string}");
-            }
-            Self::FileReadUTF16LE {
-                handle,
-                output,
-                max_length,
-                get_char_gets,
-            } => {
-                debug!("FileReadUTF16LE: {handle} {output} {max_length} {get_char_gets}");
             }
             Self::Log { set, text } => {
                 // https://github.com/mcmilk/7-Zip/blob/HEAD/CPP/7zip/Archive/Nsis/NsisIn.cpp#L4799
