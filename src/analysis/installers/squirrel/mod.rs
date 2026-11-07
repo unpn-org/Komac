@@ -125,7 +125,7 @@ impl Squirrel {
                 let reader = nupkg.by_name(entrypoint.as_str()).ok()?;
 
                 let machine = machine_from_exe_reader(reader).ok()?;
-                Some(Architecture::from_machine(machine))
+                Architecture::try_from_machine(machine)
             })
             .unwrap_or_else(|| Architecture::from_machine(pe.machine()));
 
