@@ -18,6 +18,10 @@ pub struct Section {
 }
 
 impl Section {
+    pub const fn flags(&self) -> i32 {
+        i32::from_le(self.flags.bits())
+    }
+
     /// Returns an offset to the name in the string table.
     #[inline]
     pub const fn name_offset(&self) -> i32 {
