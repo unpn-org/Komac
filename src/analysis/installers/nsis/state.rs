@@ -31,6 +31,7 @@ pub struct NsisState<'data> {
     pub variables: Variables<'data>,
     pub registry: Registry,
     pub file_system: FileSystem,
+    pub ini_files: HashMap<indextree::NodeId, super::ini::IniFile>,
     pub find_handles: HashMap<i32, VecDeque<String>>,
     pub exec_flags: ExecFlags,
     pub last_used_exec_flags: ExecFlags,
@@ -61,6 +62,7 @@ impl<'data> NsisState<'data> {
             registry: Registry::new(),
             file_system: FileSystem::new(),
             find_handles: HashMap::new(),
+            ini_files: HashMap::new(),
             exec_flags: ExecFlags::new(),
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
@@ -328,6 +330,36 @@ impl<'data> NsisState<'data> {
         parse_int64(&self.get_string(relative_offset).to_string_lossy())
     }
 
+    pub fn ini_file(&mut self, path: &str, create: bool) -> io::Result<&mut super::ini::IniFile> {
+        use super::file_system::RelativeLocation;
+        let id = if let Some(id) = self.file_system.get_id(path, RelativeLocation::Current) {
+            id
+        } else if create {
+            let id = self
+                .file_system
+                .create_file(path, None, 0u64, RelativeLocation::Current)
+                .ok_or_else(|| io::Error::other("Invalid INI filename"))?;
+            self.ini_files.insert(id, super::ini::IniFile::default());
+            id
+        } else {
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        };
+        if !self.ini_files.contains_key(&id) {
+            let position = self
+                .file_system
+                .get(path, RelativeLocation::Current)
+                .and_then(|file| file.position())
+                .ok_or_else(|| io::Error::other("INI file contents are unavailable"))?;
+            let bytes = (self.read_file)(position)?.into_inner();
+            if bytes.len() > 8 * 1024 * 1024 {
+                return Err(io::Error::other("INI file exceeds simulation limit"));
+            }
+            self.ini_files
+                .insert(id, super::ini::IniFile::parse(&bytes));
+        }
+        Ok(self.ini_files.get_mut(&id).expect("INI file was inserted"))
+    }
+
     /// Execute a NSIS code section.
     ///
     /// <https://github.com/NSIS-Dev/nsis/blob/v311/Source/exehead/exec.c#L79>
@@ -480,6 +512,7 @@ mod tests {
             registry: Registry::new(),
             file_system: FileSystem::new(),
             find_handles: HashMap::new(),
+            ini_files: HashMap::new(),
             exec_flags: ExecFlags::new(),
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
