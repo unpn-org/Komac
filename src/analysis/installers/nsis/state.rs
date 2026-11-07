@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::{HashMap, VecDeque},
     io::{self, Cursor},
 };
 
@@ -32,6 +33,7 @@ pub struct NsisState<'data> {
     pub variables: Variables<'data>,
     pub registry: Registry,
     pub file_system: FileSystem,
+    pub find_handles: HashMap<i32, VecDeque<String>>,
     pub exec_flags: ExecFlags,
     pub last_used_exec_flags: ExecFlags,
     pub status_up_hack: I32<LE>,
@@ -55,6 +57,7 @@ impl<'data> NsisState<'data> {
             variables: Variables::new(),
             registry: Registry::new(),
             file_system: FileSystem::new(),
+            find_handles: HashMap::new(),
             exec_flags: ExecFlags::new(),
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
@@ -387,6 +390,7 @@ mod tests {
             variables: Variables::new(),
             registry: Registry::new(),
             file_system: FileSystem::new(),
+            find_handles: HashMap::new(),
             exec_flags: ExecFlags::new(),
             last_used_exec_flags: ExecFlags::new(),
             status_up_hack: I32::ZERO,
