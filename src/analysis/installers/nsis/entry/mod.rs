@@ -296,6 +296,7 @@ pub enum Entry {
         name: I32<LE>,
         value: I32<LE>,
         ini_file: I32<LE>,
+        write_value: I32<LE>,
     } = 48u32.to_le(),
     ReadIni {
         output: I32<LE>,
@@ -1315,8 +1316,23 @@ impl Entry {
                 name,
                 value,
                 ini_file,
+                write_value,
             } => {
-                debug!("WriteIni: {section} {name} {value} {ini_file}");
+                let section = (section.get() != 0)
+                    .then(|| state.get_string(section.get()).into_string_lossy());
+                let name =
+                    (name.get() != 0).then(|| state.get_string(name.get()).into_string_lossy());
+                let value = (write_value.get() != 0)
+                    .then(|| state.get_string(value.get()).into_string_lossy());
+                let ini_file = state.get_string(ini_file.get()).into_string_lossy();
+                debug!("WriteIni: {section:?} {name:?} {value:?} {ini_file}");
+                match state.ini_file(&ini_file, true) {
+                    Ok(ini) => ini.write(section.as_deref(), name.as_deref(), value.as_deref()),
+                    Err(error) => {
+                        state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                        warn!(%ini_file, %error, "Could not simulate INI write");
+                    }
+                }
             }
             Self::ReadIni {
                 output,
@@ -1324,10 +1340,25 @@ impl Entry {
                 name,
                 ini_file,
             } => {
-                let name = state.get_string(name.get());
-                let section = state.get_string(section.get());
-                let ini_file = state.get_string(ini_file.get());
+                let name = state.get_string(name.get()).into_string_lossy();
+                let section = state.get_string(section.get()).into_string_lossy();
+                let ini_file = state.get_string(ini_file.get()).into_string_lossy();
                 debug!("ReadIni: {output} {name} {section} {ini_file}");
+                let value = match state.ini_file(&ini_file, false) {
+                    Ok(ini) => ini.get(&section, &name).map(str::to_owned),
+                    Err(error) => {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            warn!(%ini_file, %error, "Could not simulate INI read");
+                        }
+                        None
+                    }
+                };
+                if value.is_none() {
+                    state.exec_flags[ExecFlag::Errors] = I32::new(1);
+                }
+                state
+                    .variables
+                    .insert(output.get() as usize, value.unwrap_or_default());
             }
             Self::DeleteReg {
                 reserved: _reserved,
