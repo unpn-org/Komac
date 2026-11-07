@@ -47,6 +47,14 @@ impl FirstHeader {
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
     }
 
+    pub fn is_nsisbi(&self) -> bool {
+        self.flags().intersects(
+            HeaderFlags::BI_LONG_OFFSET
+                | HeaderFlags::BI_EXTERNAL_FILE_SUPPORT
+                | HeaderFlags::BI_EXTERNAL_FILE,
+        )
+    }
+
     #[inline]
     pub const fn flags(&self) -> HeaderFlags {
         self.flags
