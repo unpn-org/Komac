@@ -20,7 +20,7 @@ use msi::LanguageId;
 use registry::Registry;
 use state::NsisState;
 use strsim::levenshtein;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use typed_path::{Utf8Component, Utf8WindowsPath, Utf8WindowsPathBuf};
 use variables::Variables;
 use winget_types::{
@@ -122,30 +122,83 @@ impl Nsis {
                 0x200
             });
 
-        // https://nsis.sourceforge.io/Reference/.onInit
+        enum Outcome {
+            Ready,
+            Success,
+            Failed,
+            Quit,
+            Incomplete,
+        }
+        let mut outcome = Outcome::Ready;
+
+        // Abort/Quit in .onInit prevents installation. Interpreter failures also
+        // cannot justify registry writes from sections that were never reached.
         if header.code_on_init() != -1 {
             debug!("Simulating code execution for .onInit callback");
-            if let Err(invalid_entry) = state.execute_code_segment(header.code_on_init()) {
-                error!(%invalid_entry);
+            match state.execute_code_segment(header.code_on_init()) {
+                Ok(Entry::Quit) => {
+                    warn!(
+                        "Installer quit during initialization; installation sections were not reached"
+                    );
+                    outcome = Outcome::Quit;
+                }
+                Err(invalid_entry) => {
+                    error!(%invalid_entry);
+                    outcome = Outcome::Incomplete;
+                }
+                _ => {}
             }
         }
 
         for (index, section) in header.blocks().sections(&decompressed_data).enumerate() {
+            if !matches!(outcome, Outcome::Ready) {
+                break;
+            }
+            if state
+                .section_flags
+                .get(index)
+                .is_none_or(|flags| flags & 1 == 0)
+            {
+                continue;
+            }
             debug!(
                 r#"Simulating code execution for section {index} "{}""#,
                 state.get_string(section.name_offset())
             );
             match state.execute_code_segment(section.code_offset()) {
-                Ok(Entry::Quit) => break,
-                Err(invalid_entry) => error!(%invalid_entry),
+                Ok(Entry::Quit) => {
+                    warn!(
+                        index,
+                        "Installer quit during section execution; later sections were not reached"
+                    );
+                    outcome = Outcome::Quit;
+                }
+                Err(invalid_entry) => {
+                    outcome = if matches!(
+                        invalid_entry,
+                        EntryError::Abort { .. } | EntryError::Execute
+                    ) {
+                        Outcome::Failed
+                    } else {
+                        Outcome::Incomplete
+                    };
+                    error!(%invalid_entry);
+                }
                 _ => {}
             }
         }
 
-        // https://nsis.sourceforge.io/Reference/.onInstSuccess
-        if header.code_on_inst_success() != -1 {
-            debug!("Simulating code execution for .onInstSuccess callback");
-            match state.execute_code_segment(header.code_on_inst_success()) {
+        if matches!(outcome, Outcome::Ready) {
+            outcome = Outcome::Success;
+        }
+        let callback = match outcome {
+            Outcome::Success => header.code_on_inst_success(),
+            Outcome::Failed => header.code_on_inst_failed(),
+            _ => -1,
+        };
+        if callback != -1 {
+            debug!(callback, "Simulating installation outcome callback");
+            match state.execute_code_segment(callback) {
                 Err(EntryError::Abort { .. }) | Ok(..) => {}
                 Err(invalid_entry) => error!(%invalid_entry),
             }
