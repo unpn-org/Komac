@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     mem,
 };
 
@@ -9,9 +9,10 @@ use itertools::Itertools;
 use winget_types::{
     Path,
     installer::{
-        Architecture, Installer, InstallerManifest, InstallerType, NestedInstallerFiles,
-        NestedInstallerType,
+        AppsAndFeaturesEntry, Architecture, Installer, InstallerManifest, InstallerType,
+        NestedInstallerFiles, NestedInstallerType,
     },
+    locale::DefaultLocaleManifest,
     url::DecodedUrl,
 };
 
@@ -22,6 +23,8 @@ use crate::{
 
 pub trait InstallerManifestExt {
     fn inherit_manifest_properties(&self) -> impl Iterator<Item = Installer> + '_;
+
+    fn normalize_installers(&mut self, default_locale: &DefaultLocaleManifest);
 
     fn installer_for_url(
         &self,
@@ -150,20 +153,131 @@ impl InstallerManifestExt for InstallerManifest {
                     .into_iter()
                     .map(|installer| inherit_installer_properties(installer, self)),
             )
-            .map(|mut installer| {
-                // Adding a standalone installer to a ZIP-only manifest must not
-                // carry the root archive payload into the new installer entry.
-                if installer
-                    .r#type
-                    .is_some_and(|installer_type| installer_type != InstallerType::Zip)
-                {
-                    installer.nested_installer_type = None;
-                    installer.nested_installer_files.clear();
-                }
-                installer
-            })
             .collect();
+        clear_root_installer_properties(self);
     }
+
+    fn normalize_installers(&mut self, default_locale: &DefaultLocaleManifest) {
+        self.installers = self
+            .installers
+            .iter()
+            .cloned()
+            .map(|installer| installer.inherit_from(self))
+            .collect();
+
+        let registered_product_codes = self
+            .installers
+            .iter()
+            .filter(|installer| {
+                !matches!(
+                    installer.r#type,
+                    Some(InstallerType::Zip | InstallerType::Portable)
+                )
+            })
+            .flat_map(|installer| {
+                installer.product_code.as_deref().into_iter().chain(
+                    installer
+                        .apps_and_features_entries
+                        .iter()
+                        .filter_map(|entry| entry.product_code()),
+                )
+            })
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        for installer in &mut self.installers {
+            if installer
+                .r#type
+                .is_some_and(|installer_type| installer_type != InstallerType::Zip)
+            {
+                installer.nested_installer_type = None;
+                installer.nested_installer_files.clear();
+            }
+            if installer.r#type == Some(InstallerType::Portable)
+                || installer.nested_installer_type == Some(NestedInstallerType::Portable)
+            {
+                installer.scope = None;
+                installer.switches = Default::default();
+                installer.upgrade_behavior = None;
+                installer.elevation_requirement = None;
+                installer.installation_metadata = Default::default();
+            }
+            if !matches!(
+                installer.r#type,
+                Some(InstallerType::Msix | InstallerType::Appx)
+            ) {
+                installer.platform = Default::default();
+            }
+            if matches!(
+                installer.r#type,
+                Some(InstallerType::Zip | InstallerType::Portable)
+            ) {
+                if installer
+                    .product_code
+                    .as_ref()
+                    .is_some_and(|code| registered_product_codes.contains(code))
+                {
+                    installer.product_code = None;
+                }
+                installer.apps_and_features_entries =
+                    mem::take(&mut installer.apps_and_features_entries)
+                        .into_inner()
+                        .into_iter()
+                        .filter_map(|entry| {
+                            entry
+                                .product_code()
+                                .filter(|code| !registered_product_codes.contains(*code))
+                                .map(|code| {
+                                    AppsAndFeaturesEntry::builder().product_code(code).build()
+                                })
+                        })
+                        .collect();
+            }
+        }
+
+        clear_root_installer_properties(self);
+
+        if self
+            .installers
+            .iter()
+            .filter_map(|installer| installer.locale.as_ref())
+            .all_equal()
+        {
+            for installer in &mut self.installers {
+                installer.locale = None;
+            }
+        }
+        for installer in &mut self.installers {
+            for entry in &mut installer.apps_and_features_entries {
+                entry.deduplicate(default_locale);
+            }
+        }
+        // Optimization must follow all mutations because it sorts and deduplicates installers.
+        self.optimize();
+    }
+}
+
+fn clear_root_installer_properties(manifest: &mut InstallerManifest) {
+    // Root installer properties have already been inherited by the entries above.
+    // Rebuild them from the merged installers during optimization so cleared values
+    // cannot survive as stale root defaults.
+    let InstallerManifest {
+        package_identifier,
+        package_version,
+        channel,
+        installers,
+        manifest_type,
+        manifest_version,
+        ..
+    } = mem::take(manifest);
+    *manifest = InstallerManifest {
+        package_identifier,
+        package_version,
+        channel,
+        installers,
+        manifest_type,
+        manifest_version,
+        ..InstallerManifest::default()
+    };
 }
 
 fn inherit_installer_properties(installer: Installer, manifest: &InstallerManifest) -> Installer {
@@ -275,13 +389,126 @@ mod tests {
     };
 
     use rstest::rstest;
-    use winget_types::installer::{
-        Architecture, Installer, InstallerManifest, InstallerType, NestedInstallerFiles,
-        NestedInstallerType, Scope, Switches, UpgradeBehavior,
+    use winget_types::{
+        installer::{
+            Architecture, Installer, InstallerManifest, InstallerType, NestedInstallerFiles,
+            NestedInstallerType, Scope, Switches, UpgradeBehavior,
+        },
+        locale::DefaultLocaleManifest,
     };
 
     use super::{InstallerManifestExt, fix_relative_paths, merge_installer};
     use crate::manifests::to_yaml_string;
+
+    #[test]
+    fn normalization_preserves_new_manifest_release_dates_and_is_idempotent() {
+        let mut manifest = InstallerManifest {
+            release_date: Some("2026-11-07".parse().unwrap()),
+            r#type: Some(InstallerType::Inno),
+            switches: Switches::builder()
+                .custom("/install".parse().unwrap())
+                .build(),
+            installers: vec![Installer {
+                url: "https://example.com/app.exe".parse().unwrap(),
+                ..Installer::default()
+            }],
+            ..InstallerManifest::default()
+        };
+
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+        let first = serde_json::to_value(&manifest).unwrap();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        assert_eq!(manifest.release_date, Some("2026-11-07".parse().unwrap()));
+        assert_eq!(serde_json::to_value(&manifest).unwrap(), first);
+    }
+
+    #[rstest]
+    #[case::uniform(None, Some("en-US"), None, None)]
+    #[case::inherited_uniform(Some("en-US"), None, None, None)]
+    #[case::distinct(None, Some("en-US"), Some("fr-FR"), Some(["en-US", "fr-FR"]))]
+    #[case::inherited_distinct(Some("en-US"), None, Some("fr-FR"), Some(["en-US", "fr-FR"]))]
+    fn normalization_removes_uniform_locales_and_preserves_distinct_locales(
+        #[case] root: Option<&str>,
+        #[case] first: Option<&str>,
+        #[case] second: Option<&str>,
+        #[case] expected: Option<[&str; 2]>,
+    ) {
+        let mut manifest = InstallerManifest {
+            locale: root.map(|locale| locale.parse().unwrap()),
+            installers: [first, second]
+                .into_iter()
+                .enumerate()
+                .map(|(index, locale)| Installer {
+                    locale: locale.map(|locale| locale.parse().unwrap()),
+                    url: format!("https://example.com/app-{index}.exe")
+                        .parse()
+                        .unwrap(),
+                    ..Installer::default()
+                })
+                .collect(),
+            ..InstallerManifest::default()
+        };
+
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        assert_eq!(manifest.locale, None);
+        let locales = manifest
+            .inherit_manifest_properties()
+            .map(|installer| installer.locale)
+            .collect::<Vec<_>>();
+        let expected = expected.map_or_else(
+            || vec![None, None],
+            |locales| {
+                locales
+                    .into_iter()
+                    .map(|locale| Some(locale.parse().unwrap()))
+                    .collect()
+            },
+        );
+        assert_eq!(locales, expected);
+    }
+
+    #[test]
+    fn normalization_deduplicates_inherited_and_local_arp_against_final_locale() {
+        let default_locale = DefaultLocaleManifest {
+            package_name: serde_saphyr::from_str("Example").unwrap(),
+            publisher: serde_saphyr::from_str("Example Software").unwrap(),
+            package_version: "2.0".parse().unwrap(),
+            ..DefaultLocaleManifest::default()
+        };
+        let entries = |code: &str| {
+            serde_saphyr::from_str(&format!("- DisplayName: Example\n  Publisher: Example Software\n  DisplayVersion: '2.0'\n  ProductCode: {code}")).unwrap()
+        };
+        let mut manifest = InstallerManifest {
+            apps_and_features_entries: entries("inherited"),
+            installers: [None, Some("local")]
+                .into_iter()
+                .enumerate()
+                .map(|(index, code)| Installer {
+                    r#type: Some(InstallerType::Msi),
+                    url: format!("https://example.com/app-{index}.msi")
+                        .parse()
+                        .unwrap(),
+                    apps_and_features_entries: code.map(entries).unwrap_or_default(),
+                    ..Installer::default()
+                })
+                .collect(),
+            ..InstallerManifest::default()
+        };
+
+        manifest.normalize_installers(&default_locale);
+
+        for (installer, expected_code) in manifest
+            .inherit_manifest_properties()
+            .zip(["inherited", "local"])
+        {
+            assert_eq!(
+                serde_json::to_value(&installer.apps_and_features_entries).unwrap(),
+                serde_json::json!([{"ProductCode": expected_code}])
+            );
+        }
+    }
 
     #[rstest]
     #[case(None, Some(InstallerType::Zip), Some(InstallerType::Zip))]
@@ -423,7 +650,7 @@ mod tests {
                 }
             });
         manifest.update_installers(&installers, &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.installers.len(), 2);
         for installer in manifest.inherit_manifest_properties() {
@@ -446,6 +673,204 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn update_removes_installation_settings_from_portables_after_inheritance() {
+        let mut manifest = InstallerManifest {
+            scope: Some(Scope::Machine),
+            switches: Switches::builder()
+                .custom("/install".parse().unwrap())
+                .build(),
+            upgrade_behavior: Some(UpgradeBehavior::Install),
+            elevation_requirement: serde_saphyr::from_str("elevatesSelf").unwrap(),
+            installation_metadata: serde_saphyr::from_str(
+                "DefaultInstallLocation: '%ProgramFiles%\\Test'",
+            )
+            .unwrap(),
+            ..InstallerManifest::default()
+        };
+        let expected_switches = manifest.switches.clone();
+        let expected_elevation = manifest.elevation_requirement;
+        let expected_metadata = manifest.installation_metadata.clone();
+        let installers = [
+            (InstallerType::Portable, None, None, "portable.exe"),
+            (
+                InstallerType::Portable,
+                None,
+                Some(Scope::User),
+                "user-portable.exe",
+            ),
+            (
+                InstallerType::Zip,
+                Some(NestedInstallerType::Portable),
+                None,
+                "portable.zip",
+            ),
+            (
+                InstallerType::Zip,
+                Some(NestedInstallerType::Portable),
+                Some(Scope::User),
+                "user-portable.zip",
+            ),
+            (InstallerType::Msi, None, None, "app.msi"),
+        ]
+        .map(
+            |(installer_type, nested_installer_type, scope, filename)| Installer {
+                r#type: Some(installer_type),
+                nested_installer_type,
+                scope,
+                url: format!("https://example.com/{filename}").parse().unwrap(),
+                ..Installer::default()
+            },
+        );
+
+        manifest.update_installers(&installers, &HashMap::new());
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        assert_eq!(manifest.scope, None);
+        assert_eq!(manifest.installers.len(), 5);
+        for installer in manifest.inherit_manifest_properties() {
+            assert_eq!(
+                installer.scope,
+                (installer.r#type == Some(InstallerType::Msi)).then_some(Scope::Machine)
+            );
+            if installer.r#type == Some(InstallerType::Msi) {
+                assert_eq!(installer.switches, expected_switches);
+                assert_eq!(installer.upgrade_behavior, Some(UpgradeBehavior::Install));
+                assert_eq!(installer.elevation_requirement, expected_elevation);
+                assert_eq!(installer.installation_metadata, expected_metadata);
+            } else {
+                assert_eq!(installer.switches, Switches::default());
+                assert_eq!(installer.upgrade_behavior, None);
+                assert_eq!(installer.elevation_requirement, None);
+                assert!(installer.installation_metadata.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn update_cleans_inherited_platform_and_zip_registration_metadata() {
+        let mut manifest = InstallerManifest {
+            platform: serde_saphyr::from_str("[Windows.Desktop]").unwrap(),
+            product_code: Some("shared-product".into()),
+            apps_and_features_entries: serde_saphyr::from_str(indoc::indoc! {"
+                - DisplayName: No product code
+                - ProductCode: shared-product
+                - ProductCode: shared-arp
+                - ProductCode: unique-zip-arp
+                  DisplayName: Obsolete name
+                  Publisher: Obsolete publisher
+                  DisplayVersion: '1.0'
+                  UpgradeCode: obsolete-upgrade-code
+                  InstallerType: inno
+            "})
+            .unwrap(),
+            ..InstallerManifest::default()
+        };
+        let mut installers = [
+            InstallerType::Zip,
+            InstallerType::Portable,
+            InstallerType::Msi,
+            InstallerType::Msix,
+            InstallerType::Appx,
+        ]
+        .into_iter()
+        .map(|installer_type| Installer {
+            r#type: Some(installer_type),
+            url: format!("https://example.com/app.{installer_type}")
+                .parse()
+                .unwrap(),
+            apps_and_features_entries: if matches!(
+                installer_type,
+                InstallerType::Zip | InstallerType::Portable
+            ) {
+                Default::default()
+            } else {
+                serde_saphyr::from_str("- ProductCode: shared-arp\n- DisplayName: Native entry")
+                    .unwrap()
+            },
+            ..Installer::default()
+        })
+        .collect::<Vec<_>>();
+        installers.push(Installer {
+            r#type: Some(InstallerType::Zip),
+            url: "https://example.com/unique.zip".parse().unwrap(),
+            product_code: Some("unique-zip-product".into()),
+            ..Installer::default()
+        });
+
+        manifest.update_installers(&installers, &HashMap::new());
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        assert_eq!(manifest.installers.len(), 6);
+        for installer in manifest.inherit_manifest_properties() {
+            assert_eq!(
+                installer.platform.is_empty(),
+                !matches!(
+                    installer.r#type,
+                    Some(InstallerType::Msix | InstallerType::Appx)
+                )
+            );
+            if matches!(
+                installer.r#type,
+                Some(InstallerType::Zip | InstallerType::Portable)
+            ) {
+                assert_eq!(
+                    installer.product_code.as_deref(),
+                    installer
+                        .url
+                        .as_str()
+                        .ends_with("unique.zip")
+                        .then_some("unique-zip-product")
+                );
+                assert_eq!(installer.apps_and_features_entries.len(), 1);
+                assert_eq!(
+                    serde_json::to_value(&installer.apps_and_features_entries).unwrap(),
+                    serde_json::json!([{"ProductCode": "unique-zip-arp"}])
+                );
+                assert_eq!(
+                    installer
+                        .apps_and_features_entries
+                        .iter()
+                        .next()
+                        .unwrap()
+                        .product_code(),
+                    Some("unique-zip-arp")
+                );
+            } else {
+                assert_eq!(installer.product_code.as_deref(), Some("shared-product"));
+                assert_eq!(installer.apps_and_features_entries.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn zip_keeps_product_codes_without_a_non_zip_duplicate() {
+        let mut manifest = InstallerManifest {
+            product_code: Some("zip-product".into()),
+            apps_and_features_entries: serde_saphyr::from_str("- ProductCode: zip-arp").unwrap(),
+            ..InstallerManifest::default()
+        };
+        let installer = Installer {
+            r#type: Some(InstallerType::Zip),
+            url: "https://example.com/app.zip".parse().unwrap(),
+            ..Installer::default()
+        };
+
+        manifest.update_installers(&[installer], &HashMap::new());
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        assert_eq!(manifest.product_code.as_deref(), Some("zip-product"));
+        assert_eq!(
+            manifest
+                .apps_and_features_entries
+                .iter()
+                .next()
+                .unwrap()
+                .product_code(),
+            Some("zip-arp")
+        );
     }
 
     #[test]
@@ -477,7 +902,7 @@ mod tests {
         };
 
         manifest.update_installers(&new_installers, &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.installers.len(), 2);
         for installer in manifest.inherit_manifest_properties() {
@@ -497,16 +922,56 @@ mod tests {
     }
 
     #[test]
-    fn update_preserves_all_root_installer_properties() {
+    fn update_clears_stale_root_properties_before_optimization() {
+        let mut manifest = InstallerManifest {
+            package_identifier: "Test.Package".parse().unwrap(),
+            package_version: "2.0".parse().unwrap(),
+            channel: Some("stable".parse().unwrap()),
+            release_date: Some("2026-09-15".parse().unwrap()),
+            r#type: Some(InstallerType::Zip),
+            nested_installer_type: Some(NestedInstallerType::Portable),
+            nested_installer_files: BTreeSet::from([NestedInstallerFiles {
+                relative_file_path: "app.exe".into(),
+                portable_command_alias: None,
+            }]),
+            scope: Some(Scope::Machine),
+            installers: vec![Installer {
+                architecture: Architecture::X64,
+                url: "https://example.com/v1/app.zip".parse().unwrap(),
+                ..Installer::default()
+            }],
+            ..InstallerManifest::default()
+        };
+        let new_installer = Installer {
+            architecture: Architecture::X64,
+            r#type: Some(InstallerType::Msi),
+            url: "https://example.com/v2/app.msi".parse().unwrap(),
+            ..Installer::default()
+        };
+
+        manifest.update_installers(&[new_installer], &HashMap::new());
+
+        assert_eq!(manifest.installers[0].scope, Some(Scope::Machine));
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        assert_eq!(manifest.package_identifier.as_str(), "Test.Package");
+        assert_eq!(manifest.package_version.to_string(), "2.0");
+        assert_eq!(manifest.channel.unwrap().to_string(), "stable");
+        assert_eq!(manifest.release_date, None);
+        assert_eq!(manifest.nested_installer_type, None);
+        assert!(manifest.nested_installer_files.is_empty());
+        assert_eq!(manifest.r#type, Some(InstallerType::Msi));
+        assert_eq!(manifest.scope, Some(Scope::Machine));
+    }
+
+    #[test]
+    fn update_preserves_applicable_root_installer_properties() {
         let properties: serde_json::Value = serde_saphyr::from_str(indoc::indoc! {r#"
-            InstallerLocale: en-US
-            Platform: [Windows.Desktop]
             MinimumOSVersion: 10.0.19041.0
             InstallerType: zip
-            NestedInstallerType: portable
+            NestedInstallerType: exe
             NestedInstallerFiles:
             - RelativeFilePath: app.exe
-            Scope: machine
             InstallModes: [interactive, silent, silentWithProgress]
             InstallerSwitches:
               Silent: /silent
@@ -545,7 +1010,7 @@ mod tests {
             UnsupportedOSArchitectures: [x86]
             UnsupportedArguments: [log]
             AppsAndFeaturesEntries:
-            - DisplayName: Test Application
+            - ProductCode: unique-zip-product
             ElevationRequirement: elevatesSelf
             InstallationMetadata:
               DefaultInstallLocation: '%ProgramFiles%\Test'
@@ -587,7 +1052,7 @@ mod tests {
             });
 
         manifest.update_installers(&new_installers, &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.installers.len(), 2);
         for installer in manifest.inherit_manifest_properties() {
@@ -670,7 +1135,7 @@ mod tests {
         }
 
         manifest.update_installers(&new_installers, &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.installers.len(), 4);
         assert_eq!(manifest.upgrade_behavior, Some(UpgradeBehavior::Install));
@@ -752,7 +1217,7 @@ mod tests {
         }
 
         manifest.update_installers(&new_installers, &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.installers.len(), 4);
         let archive_minimum = archive_minimum.unwrap_or(root_minimum);
@@ -836,7 +1301,7 @@ mod tests {
         };
 
         manifest.update_installers(from_ref(&new_installer), &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.installers.len(), 2);
         assert_eq!(manifest.installers[0].architecture, Architecture::X86);
@@ -974,7 +1439,7 @@ mod tests {
             });
 
         manifest.update_installers(&new_installers, &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.r#type, Some(InstallerType::Zip));
         assert_eq!(manifest.nested_installer_type, expected_type);
@@ -1017,7 +1482,7 @@ mod tests {
             ..InstallerManifest::default()
         };
         manifest.update_installers(&[new_installer], &HashMap::new());
-        manifest.optimize();
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
 
         assert_eq!(manifest.scope, None);
         assert_eq!(

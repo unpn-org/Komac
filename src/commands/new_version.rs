@@ -49,6 +49,7 @@ use crate::{
         text::{TextPrompt, confirm_prompt, optional_prompt, required_prompt},
     },
     token::TokenManager,
+    traits::InstallerManifestExt,
 };
 
 /// Create a new package from scratch
@@ -462,13 +463,7 @@ impl NewVersion {
             ..DefaultLocaleManifest::default()
         };
 
-        installer_manifest
-            .installers
-            .iter_mut()
-            .flat_map(|installer| &mut installer.apps_and_features_entries)
-            .for_each(|entry| entry.deduplicate(&default_locale_manifest));
-
-        installer_manifest.optimize();
+        installer_manifest.normalize_installers(&default_locale_manifest);
 
         let manifests = Manifests {
             installer: installer_manifest,

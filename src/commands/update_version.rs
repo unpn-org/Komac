@@ -169,15 +169,6 @@ impl UpdateVersion {
             .installer
             .update_installers(&installer_results, &possible_installer_files);
 
-        manifests
-            .installer
-            .installers
-            .iter_mut()
-            .flat_map(|installer| &mut installer.apps_and_features_entries)
-            .for_each(|entry| entry.deduplicate(&manifests.default_locale));
-
-        manifests.installer.optimize();
-
         // The previous version had a release notes URL that would otherwise be dropped
         if self.release_notes_url.is_none()
             && github_values
@@ -208,6 +199,10 @@ impl UpdateVersion {
             &mut github_values,
             self.release_notes_url.as_ref(),
         );
+
+        manifests
+            .installer
+            .normalize_installers(&manifests.default_locale);
 
         let mut changes = manifests.create(
             &self.identifier,
