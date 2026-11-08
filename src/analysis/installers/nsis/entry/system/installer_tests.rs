@@ -12,7 +12,7 @@ fn check_installer(compressed: &[u8]) {
     ZlibDecoder::new(compressed).read_to_end(&mut data).unwrap();
     let mut reader = Cursor::new(data);
     let pe = PE::read_from(&mut reader).unwrap();
-    let nsis = Nsis::new(reader, &pe).unwrap();
+    let nsis = Nsis::new(reader, &pe, None).unwrap();
     assert_eq!(
         nsis.install_directory.as_ref().map(|path| path.as_str()),
         Some(r"%LocalAppData%\Programs\System regression")
