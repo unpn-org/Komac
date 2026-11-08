@@ -6,7 +6,6 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, WrapErr, eyre};
-use itertools::Itertools;
 use tokio::try_join;
 use winget_types::{PackageIdentifier, PackageVersion, locale::ReleaseNotes, url::ReleaseNotesUrl};
 
@@ -241,33 +240,7 @@ pub async fn update_package(
         .installer
         .update_installers(&installer_results, &possible_installer_files);
 
-    manifests.installer.locale = None;
-    if manifests
-        .installer
-        .installers
-        .iter()
-        .flat_map(|installer| &installer.locale)
-        .all_equal()
-    {
-        for installer in &mut manifests.installer.installers {
-            installer.locale = None;
-        }
-    }
-
     manifests.update(&package_version, &mut github_values, None);
-
-    manifests
-        .installer
-        .apps_and_features_entries
-        .iter_mut()
-        .chain(
-            manifests
-                .installer
-                .installers
-                .iter_mut()
-                .flat_map(|installer| &mut installer.apps_and_features_entries),
-        )
-        .for_each(|entry| entry.deduplicate(&manifests.default_locale));
 
     if let Some(release_notes_url) = release_notes_url {
         manifests.default_locale.release_notes_url = Some(release_notes_url);
@@ -277,8 +250,9 @@ pub async fn update_package(
         manifests.default_locale.release_notes = Some(release_notes);
     }
 
-    // `optimize` sorts installers, so it must run after all installer mutations.
-    manifests.installer.optimize();
+    manifests
+        .installer
+        .normalize_installers(&manifests.default_locale);
 
     let changes = manifests.create(&package_identifier, &package_version, None, font);
 
