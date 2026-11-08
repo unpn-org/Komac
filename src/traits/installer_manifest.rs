@@ -449,6 +449,54 @@ mod tests {
     }
 
     #[test]
+    fn update_removes_missing_old_installers_and_adds_new_inputs() {
+        let previous_installers = [
+            (Architecture::X86, "app-x86.exe", "/obsolete"),
+            (Architecture::X64, "app-x64.exe", "/retained"),
+            (Architecture::X64, "app.msi", "/obsolete-msi"),
+        ]
+        .map(|(architecture, file_name, custom)| Installer {
+            architecture,
+            url: format!("https://example.com/v1/{file_name}")
+                .parse()
+                .unwrap(),
+            switches: Switches::builder().custom(custom.parse().unwrap()).build(),
+            ..Installer::default()
+        });
+        let new_installers =
+            [Architecture::X64, Architecture::Arm64].map(|architecture| Installer {
+                architecture,
+                url: format!("https://example.com/v2/app-{architecture}.exe")
+                    .parse()
+                    .unwrap(),
+                ..Installer::default()
+            });
+        let mut manifest = InstallerManifest {
+            installers: previous_installers.into(),
+            ..InstallerManifest::default()
+        };
+
+        manifest.update_installers(&new_installers, &HashMap::new());
+        manifest.optimize();
+
+        assert_eq!(manifest.installers.len(), 2);
+        for installer in manifest.inherit_manifest_properties() {
+            assert!(new_installers.iter().any(|new| new.url == installer.url));
+            let expected = if installer.architecture == Architecture::X64 {
+                Switches::builder()
+                    .custom("/retained".parse().unwrap())
+                    .build()
+            } else {
+                Switches::default()
+            };
+            assert_eq!(installer.switches, expected);
+        }
+
+        manifest.update_installers(&[], &HashMap::new());
+        assert!(manifest.installers.is_empty());
+    }
+
+    #[test]
     fn update_preserves_all_root_installer_properties() {
         let properties: serde_json::Value = serde_saphyr::from_str(indoc::indoc! {r#"
             InstallerLocale: en-US

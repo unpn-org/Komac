@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use winget_types::installer::{Architecture, ElevationRequirement, Installer, Scope};
 
+use crate::analysis::extensions::FileExtension;
+
 fn locale_score(previous_installer: &Installer, new_installer: &Installer) -> f64 {
     let Some(previous_locale) = previous_installer.locale.as_ref() else {
         return 0.0;
@@ -105,7 +107,7 @@ pub fn match_installers(
     previous_installers
         .iter()
         .cloned()
-        .map(|mut previous_installer| {
+        .filter_map(|mut previous_installer| {
             if previous_installer.scope.is_none() {
                 previous_installer.scope =
                     duplicate_elevation_scope(&previous_installer, previous_installers);
@@ -127,13 +129,32 @@ pub fn match_installers(
             let mut best_match = None;
 
             for new_installer in new_installers {
+                let installer_url = &new_installer.url;
+                // A different format or an explicitly different URL variant cannot
+                // replace this entry. Unknown variants remain eligible for shared
+                // installers whose stub architecture or default scope may differ.
+                if FileExtension::from_url(installer_url) != previous_extension
+                    || found_architectures
+                        .get(installer_url)
+                        .is_some_and(|architecture| {
+                            *architecture != Architecture::Neutral
+                                && previous_installer.architecture != Architecture::Neutral
+                                && *architecture != previous_installer.architecture
+                        })
+                    || found_scopes.get(installer_url).is_some_and(|scope| {
+                        previous_installer
+                            .scope
+                            .is_some_and(|previous| previous != *scope)
+                    })
+                {
+                    continue;
+                }
                 if has_matching_nested_architecture
                     && new_installer.architecture != previous_installer.architecture
                 {
                     continue;
                 }
 
-                let installer_url = &new_installer.url;
                 let mut score = 0.0;
                 if new_installer.architecture == previous_installer.architecture {
                     score += 1.0;
@@ -157,11 +178,6 @@ pub fn match_installers(
                     new_installer.url.as_str(),
                 );
 
-                let new_extension = FileExtension::from_url(&new_installer.url);
-                if new_extension != previous_extension {
-                    score = 0.0;
-                }
-
                 let is_new_architecture = !found_architectures.is_empty()
                     && !found_architectures.contains_key(installer_url);
                 let is_new_scope =
@@ -177,7 +193,9 @@ pub fn match_installers(
                 }
             }
 
-            (previous_installer, best_match.cloned().unwrap())
+            best_match
+                .cloned()
+                .map(|installer| (previous_installer, installer))
         })
         .collect::<HashMap<_, _>>()
 }
@@ -226,10 +244,7 @@ mod tests {
         url::DecodedUrl,
     };
 
-    use crate::{
-        analysis::extensions::FileExtension,
-        match_installers::{match_installers, unmatched_installers},
-    };
+    use crate::match_installers::{match_installers, unmatched_installers};
 
     #[test]
     fn test_vscodium() {
@@ -283,6 +298,29 @@ mod tests {
             match_installers(&previous_installers, &new_installers),
             expected
         );
+    }
+
+    #[test]
+    fn unmatched_scope_variant_is_removed_without_consuming_new_input() {
+        let previous = Installer {
+            architecture: Architecture::X64,
+            scope: Some(Scope::Machine),
+            url: "https://example.com/v1/app-machine-x64.exe"
+                .parse()
+                .unwrap(),
+            ..Installer::default()
+        };
+        let new = Installer {
+            architecture: Architecture::X64,
+            scope: Some(Scope::User),
+            url: "https://example.com/v2/app-user-x64.exe".parse().unwrap(),
+            ..Installer::default()
+        };
+
+        let matched = match_installers(from_ref(&previous), from_ref(&new));
+
+        assert!(matched.is_empty());
+        assert_eq!(unmatched_installers(&matched, from_ref(&new)), vec![new]);
     }
 
     #[test]
