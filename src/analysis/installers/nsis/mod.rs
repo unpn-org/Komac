@@ -65,7 +65,11 @@ pub struct Nsis {
 }
 
 impl Nsis {
-    pub fn new<R: Read + Seek>(mut reader: R, pe: &PE) -> Result<Self, NsisError> {
+    pub fn new<R: Read + Seek>(
+        mut reader: R,
+        pe: &PE,
+        target_architecture: Option<Architecture>,
+    ) -> Result<Self, NsisError> {
         let manifest = pe.manifest(&mut reader).ok();
         let finder = FirstHeaderFinder::find(&mut reader, pe)?;
         let first_header = finder.first_header();
@@ -123,6 +127,7 @@ impl Nsis {
             architecture,
             state.str_block.starts_with(b"\0\0"),
             manifest.as_deref(),
+            target_architecture,
         );
         state.exec_flags[entry::ExecFlag::Silent] =
             zerocopy::I32::new(i32::from(first_header.is_silent()));
