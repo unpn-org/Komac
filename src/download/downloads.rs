@@ -55,12 +55,18 @@ impl Downloads {
                     .flat_map(|installer| &installer.nested_installer_files)
                     .map(|file| file.relative_file_path.to_string())
                     .collect::<Vec<_>>();
+                let target_architecture = architecture.or_else(|| {
+                    previous_installer
+                        .as_ref()
+                        .map(|installer| installer.architecture)
+                });
                 let mut file_analyzer = Analyzer::with_installer_type(
                     file,
                     download.file_name(),
                     FontAnalysis::None,
                     previous_installer.and_then(|installer| installer.r#type),
                     &nested_installer_files,
+                    target_architecture,
                 )?;
                 for installer in &mut file_analyzer.installers {
                     if let Some(architecture) = architecture {
