@@ -90,6 +90,7 @@ impl MockCaller {
         architecture: winget_types::installer::Architecture,
         unicode: bool,
         manifest: Option<&str>,
+        target_architecture: Option<winget_types::installer::Architecture>,
     ) {
         let environment = &mut self.engine.environment;
         environment.pointer = if architecture.is_64_bit() { 8 } else { 4 };
@@ -98,10 +99,22 @@ impl MockCaller {
             _ if architecture.is_64_bit() => 0x8664,
             _ => 0x14c,
         };
-        if environment.process_machine == 0xaa64
-            && std::env::var_os("KOMAC_NSIS_NATIVE_ARCH").is_none()
-        {
-            environment.native_machine = 0xaa64;
+        // The setup executable can be x86 even when its payload requires ARM64.
+        // Keep the process ABI separate from the Windows architecture it checks.
+        if std::env::var_os("KOMAC_NSIS_NATIVE_ARCH").is_none() {
+            match target_architecture {
+                Some(winget_types::installer::Architecture::X86) => {
+                    environment.native_machine = 0x14c
+                }
+                Some(winget_types::installer::Architecture::X64) => {
+                    environment.native_machine = 0x8664
+                }
+                Some(winget_types::installer::Architecture::Arm64) => {
+                    environment.native_machine = 0xaa64
+                }
+                _ if environment.process_machine == 0xaa64 => environment.native_machine = 0xaa64,
+                _ => {}
+            }
         }
         environment.unicode = unicode;
         let manifest = manifest.unwrap_or_default().to_ascii_lowercase();

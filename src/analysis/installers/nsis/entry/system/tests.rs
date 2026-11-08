@@ -143,7 +143,7 @@ fn nsis_reads_cached_windows_version_and_execution_flags() {
     assert_eq!(h.system.read_memory(0, (63 << 24) | 4, &h.flags), None);
     assert_eq!(h.system.read_memory(0, 8, &h.flags), None);
     h.system
-        .configure(winget_types::installer::Architecture::X64, true, None);
+        .configure(winget_types::installer::Architecture::X64, true, None, None);
     assert_eq!(h.system.read_memory(0, (60 << 24) | 1, &h.flags), Some(1));
 }
 
@@ -466,6 +466,20 @@ fn saved_procedure_redefinitions_and_temporary_overrides_follow_native_rules() {
 }
 
 #[test]
+fn target_architecture_configures_windows_without_changing_the_setup_abi() {
+    use winget_types::installer::Architecture;
+    let mut h = Harness::new();
+    h.system
+        .configure(Architecture::X86, true, None, Some(Architecture::Arm64));
+    h.call("kernel32::IsWow64Process2(p-1,*i0s,*i0s)i.r0");
+    assert_eq!(h.pop(), "332");
+    assert_eq!(h.pop(), "43620");
+    h.call("*0x7FFE002E(&i2.s)");
+    assert_eq!(h.pop(), "43620");
+    assert_eq!(h.system.engine.environment.pointer, 4);
+}
+
+#[test]
 fn arm_emulation_shared_architecture_and_win81_compatibility_are_distinct() {
     use winget_types::installer::Architecture;
     let mut h = Harness::new();
@@ -474,6 +488,7 @@ fn arm_emulation_shared_architecture_and_win81_compatibility_are_distinct() {
         Architecture::X86,
         true,
         Some("1f676c76-80e1-4239-95bb-83d0f6d0da78"),
+        None,
     );
     h.call("kernel32::IsWow64Process(p-1,*i0s)i.r0");
     assert_eq!(h.pop(), "0");
