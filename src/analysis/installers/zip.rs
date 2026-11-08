@@ -19,8 +19,8 @@ use winget_types::installer::{Installer, InstallerType, NestedInstallerFiles};
 use zip::ZipArchive;
 
 use super::{super::Analyzer, font::FontAnalysis};
-#[cfg(feature = "cli")]
 use crate::analysis::extensions::FileExtension;
+#[cfg(feature = "cli")]
 use crate::prompts::handle_inquire_error;
 
 const IGNORABLE_FOLDERS: [&str; 2] = ["__MACOSX", "resources"];
