@@ -6,7 +6,7 @@ use std::{
 use camino::Utf8Path;
 use color_eyre::eyre::{Result, bail};
 use winget_types::{
-    installer::{Installer, InstallerType},
+    installer::{Architecture, Installer, InstallerType},
     locale::{Copyright, PackageName, Publisher},
 };
 
@@ -43,7 +43,14 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
         file_name: &str,
         font_analysis: FontAnalysis,
     ) -> Result<Self> {
-        Self::with_installer_type(reader, file_name, font_analysis, None, &[])
+        Self::with_installer_type(
+            reader,
+            file_name,
+            font_analysis,
+            None,
+            &[],
+            None,
+        )
     }
 
     pub(crate) fn with_installer_type(
@@ -52,6 +59,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
         font_analysis: FontAnalysis,
         installer_type: Option<InstallerType>,
         nested_installer_files: &[String],
+        target_architecture: Option<Architecture>,
     ) -> Result<Self> {
         let path = Utf8Path::new(file_name);
         // ZIP containers can have arbitrary extensions (for example, NuGet's .nupkg).
@@ -103,7 +111,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
                 });
             }
             FileExtension::Exe => {
-                let mut exe = Exe::new(reader)?;
+                let mut exe = Exe::new(reader, target_architecture)?;
                 return Ok(Self {
                     installers: exe.installers(),
                     copyright: exe

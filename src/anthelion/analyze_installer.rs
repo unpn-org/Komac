@@ -123,6 +123,15 @@ pub(super) async fn analyze_sources(
                     .flat_map(|installer| &installer.nested_installer_files)
                     .map(|file| file.relative_file_path.to_string())
                     .collect(),
+                target_architecture: source
+                    .architecture
+                    .or(source.url.override_architecture())
+                    .or_else(|| Architecture::from_url(source.url.inner().as_str()))
+                    .or_else(|| {
+                        previous_installer
+                            .as_ref()
+                            .map(|installer| installer.architecture)
+                    }),
                 installer_type: previous_installer.and_then(|installer| installer.r#type),
             };
             unique_urls
@@ -153,6 +162,7 @@ pub(super) async fn analyze_sources(
                         &source_key.nested_installer_files,
                         font_version,
                         source_key.installer_type,
+                        source_key.target_architecture,
                     )?;
                     Ok::<_, Report>((source_key, analysis))
                 })
@@ -198,6 +208,7 @@ struct AnalysisKey {
     nested_installer_matches: Vec<String>,
     nested_installer_files: Vec<String>,
     installer_type: Option<InstallerType>,
+    target_architecture: Option<Architecture>,
 }
 
 fn analyze_download(
@@ -206,6 +217,7 @@ fn analyze_download(
     nested_installer_files: &[String],
     font_version: bool,
     installer_type: Option<InstallerType>,
+    target_architecture: Option<Architecture>,
 ) -> Result<ArtifactAnalysis> {
     let architecture = file.download.architecture();
     let file_name = file.download.file_name().to_owned();
@@ -219,6 +231,7 @@ fn analyze_download(
         },
         installer_type,
         &[],
+        target_architecture.or(architecture),
     )
     .wrap_err_with(|| format!("Failed to analyze {file_name}"))?;
 
@@ -387,12 +400,14 @@ mod tests {
             nested_installer_matches: vec!["first.exe".to_owned()],
             nested_installer_files: Vec::new(),
             installer_type: None,
+            target_architecture: None,
         };
         let second = AnalysisKey {
             url,
             nested_installer_matches: vec!["second.exe".to_owned()],
             nested_installer_files: Vec::new(),
             installer_type: None,
+            target_architecture: None,
         };
 
         assert_ne!(first, second);
@@ -405,6 +420,7 @@ mod tests {
             nested_installer_matches: Vec::new(),
             nested_installer_files: Vec::new(),
             installer_type: Some(InstallerType::Msix),
+            target_architecture: None,
         };
         let zip = AnalysisKey {
             installer_type: Some(InstallerType::Zip),
@@ -420,6 +436,7 @@ mod tests {
             nested_installer_matches: Vec::new(),
             nested_installer_files: vec!["x64/setup.msi".to_owned()],
             installer_type: Some(InstallerType::Zip),
+            target_architecture: None,
         };
         let second = AnalysisKey {
             nested_installer_files: vec!["arm64/setup.msi".to_owned()],
