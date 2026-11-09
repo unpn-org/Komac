@@ -3,6 +3,7 @@ mod del_flags;
 mod exec_flag;
 mod generic_access_rights;
 mod lang_dialog;
+mod log_ex;
 mod message_box;
 mod push_pop;
 mod seek_from;
@@ -1272,6 +1273,13 @@ impl Entry {
                                 files: &mut state.file_system,
                             },
                         );
+                    } else if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("LogEx.dll"))
+                        && log_ex::call(&function, &mut stack)
+                    {
+                        debug!(%function, "Consumed LogEx logging arguments");
                     } else if dll_file_name.ends_with("StdUtils.dll")
                         && std_utils::call(&function, &mut stack)
                     {
