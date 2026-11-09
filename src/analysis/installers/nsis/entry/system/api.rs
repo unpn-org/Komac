@@ -158,6 +158,9 @@ impl Engine {
                     | "RegEnumKeyEx"
                     | "RegEnumValue"
                     | "RegCloseKey"
+                    | "AllocateAndInitializeSid"
+                    | "CheckTokenMembership"
+                    | "FreeSid"
             ),
             "shlwapi" => matches!(
                 function,
@@ -370,11 +373,45 @@ impl Engine {
         }
         let (module, function, explicit_wide) = name(target)?;
         let wide = explicit_wide.unwrap_or(self.environment.unicode);
-        if module == "advapi32" {
+        if module == "advapi32" && function.starts_with("Reg") {
             return self.registry_api(function, wide, args, context);
         }
         let a = |n: usize| args.get(n).copied();
         match (module.as_str(), function) {
+            ("advapi32", "AllocateAndInitializeSid") => {
+                let authority = self.memory.read(a(0)?, 6)?.to_vec();
+                let count = a(1)? as u8;
+                if count > 8 {
+                    return self.failure(87);
+                }
+                let mut sid = vec![1, count];
+                sid.extend_from_slice(&authority);
+                for index in 0..usize::from(count) {
+                    sid.extend_from_slice(&(a(index + 2)? as u32).to_le_bytes());
+                }
+                let output = a(10)?;
+                self.memory.read(output, self.environment.pointer)?;
+                let pointer = self.memory.alloc(sid.len())?;
+                self.memory.write(pointer, &sid)?;
+                self.memory
+                    .put_number(output, pointer, self.environment.pointer)?;
+                Some(1)
+            }
+            ("advapi32", "CheckTokenMembership") => {
+                if a(0)? != 0 {
+                    return self.failure(6);
+                }
+                // Match the administrative account used by UserInfo and UAC queries.
+                // Other group memberships require a token model we do not have.
+                const ADMINISTRATORS: &[u8] = &[1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0];
+                if self.memory.read(a(1)?, ADMINISTRATORS.len())? != ADMINISTRATORS {
+                    return None;
+                }
+                self.assume("administrator-account");
+                self.memory.put_number(a(2)?, 1, 4)?;
+                Some(1)
+            }
+            ("advapi32", "FreeSid") => self.memory.free(a(0)?).then_some(0),
             ("kernel32" | "kernelbase", "GetCurrentProcess") => Some(u64::MAX),
             ("kernel32" | "kernelbase", "GetCurrentProcessId") => {
                 self.assume("process-state");

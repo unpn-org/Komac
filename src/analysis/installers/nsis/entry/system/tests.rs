@@ -67,6 +67,29 @@ impl Harness {
 }
 
 #[test]
+fn administrator_membership_uses_an_allocated_sid_and_separate_result() {
+    let mut h = Harness::new();
+    h.call("*(&i1 0,&i4 0,&i1 5)p.r0");
+    h.call("advapi32::AllocateAndInitializeSid(pr0,i2,i32,i544,i0,i0,i0,i0,i0,i0,*p.r1)i.r2");
+    assert_eq!(h.reg(2), "1");
+    let sid = engine::integer(&h.reg(1));
+    h.call("advapi32::CheckTokenMembership(p0,pr1,*i.r3)i.r2");
+    assert_eq!(h.reg(2), "1");
+    assert_eq!(h.reg(3), "1");
+    h.variables.insert(10, sid.to_string());
+    h.call("advapi32::CheckTokenMembership(i n,i R0,*i .R1)i.r5");
+    assert_eq!(h.reg(5), "1");
+    assert_eq!(h.reg(11), "1");
+    h.call("advapi32::CheckTokenMembership(p123,pr1,*i.r3)i.r2");
+    assert_eq!(h.reg(2), "0");
+    h.call("kernel32::GetLastError()i.r2");
+    assert_eq!(h.reg(2), "6");
+    h.call("advapi32::FreeSid(pr1)p.r2");
+    assert_eq!(h.reg(2), "0");
+    assert!(h.system.engine.memory.read(sid, 16).is_none());
+}
+
+#[test]
 fn explicit_ansi_conversion_preserves_multibyte_characters() {
     let mut h = Harness::new();
     h.call("*(&i8 0xa5b2b1d6e3d3b7b6)p.r0");
