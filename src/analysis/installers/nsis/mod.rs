@@ -350,6 +350,13 @@ impl Installers for Nsis {
                     .as_deref()
                     .filter(|path| {
                         let unresolved = path.as_str().contains("$ERROR")
+                            || path.components().any(|component| {
+                                component.as_str().eq_ignore_ascii_case("$INSTDIR")
+                                    || strings::PredefinedVar::all().iter().any(|variable| {
+                                        variable.as_str().starts_with('$')
+                                            && component.as_str().eq_ignore_ascii_case(variable.as_str())
+                                    })
+                            })
                             || path.components().next().is_some_and(|component| {
                                 !component.as_str().is_empty()
                                     && component.as_str().bytes().all(|byte| byte.is_ascii_digit())
@@ -402,6 +409,9 @@ mod tests {
             "1610612752",
             r"0\sunsama",
             r"%ProgramFiles%\Browser\$ERROR",
+            r"$EXEDIR",
+            r"$EXEDIR\MuMuPlayerARM",
+            r"$INSTDIR\App",
         ] {
             let nsis = nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, path);
             assert!(
@@ -413,6 +423,7 @@ mod tests {
             r"%ProgramFiles%\7-Zip",
             r"C:\123",
             r"%LocalAppData%\Programs\App",
+            r"%ProgramFiles%\App\Plugins",
         ] {
             let nsis = nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, path);
             assert!(
