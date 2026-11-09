@@ -202,7 +202,12 @@ impl FileSystem {
     where
         T: AsRef<Utf8WindowsPath>,
     {
-        self.get(path, location).is_some()
+        let path = path.as_ref();
+        if path.as_str().contains(['*', '?']) {
+            !self.find_at(path.as_str(), location).is_empty()
+        } else {
+            self.get(path, location).is_some()
+        }
     }
 
     pub fn get<T>(&self, path: T, location: RelativeLocation) -> Option<&FsEntry>
@@ -251,17 +256,31 @@ impl FileSystem {
     }
 
     pub fn find(&self, spec: &str) -> Vec<String> {
+        self.find_at(spec, RelativeLocation::Current)
+    }
+
+    fn find_at(&self, spec: &str, location: RelativeLocation) -> Vec<String> {
         let path = Utf8WindowsPath::new(spec);
         let Some(pattern) = path.file_name() else {
             return Vec::new();
         };
         let parent = match path.parent().filter(|p| !p.as_str().is_empty()) {
-            Some(parent) => self.get_id(parent, RelativeLocation::Current),
-            None => Some(self.current_dir),
+            Some(parent) => self.get_id(parent, location),
+            None => Some(match location {
+                RelativeLocation::Root => self.root,
+                RelativeLocation::Current => self.current_dir,
+            }),
         };
         let Some(parent) = parent else {
             return Vec::new();
         };
+        if !self
+            .arena
+            .get(parent)
+            .is_some_and(|node| node.get().is_directory())
+        {
+            return Vec::new();
+        }
         let mut names = Vec::new();
         if parent != self.root {
             names.extend(
@@ -453,6 +472,26 @@ impl<'a> IntoIterator for &'a FileSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wildcard_existence_respects_the_directory_and_search_location() {
+        let mut fs = FileSystem::new();
+        fs.create_file(
+            r"$EXEDIR\tmp\shell\MuMu.exe",
+            None,
+            0u64,
+            RelativeLocation::Root,
+        )
+        .unwrap();
+        fs.set_directory(r"$EXEDIR\tmp", RelativeLocation::Root);
+        assert!(fs.exists(r"shell\*.EXE", RelativeLocation::Current));
+        assert!(fs.exists(r"shell\MuM?.exe", RelativeLocation::Current));
+        assert!(fs.exists(r"$EXEDIR\tmp\shell\*.*", RelativeLocation::Root));
+        assert!(!fs.exists(r"shell\*.exe", RelativeLocation::Root));
+        assert!(!fs.exists(r"shell\*.dll", RelativeLocation::Current));
+        assert!(!fs.exists(r"shell\MuMu.exe\*.*", RelativeLocation::Current));
+        assert!(!fs.exists(r"missing\*.exe", RelativeLocation::Current));
+    }
 
     #[test]
     fn cannot_remove_working_directory_but_can_remove_its_contents() {
