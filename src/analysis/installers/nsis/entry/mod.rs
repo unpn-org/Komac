@@ -1,3 +1,4 @@
+mod access_control;
 mod creation_disposition;
 mod del_flags;
 mod exec_flag;
@@ -1280,6 +1281,13 @@ impl Entry {
                         && log_ex::call(&function, &mut stack)
                     {
                         debug!(%function, "Consumed LogEx logging arguments");
+                    } else if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("AccessControl.dll"))
+                        && access_control::call(&function, &mut stack, &state.file_system)
+                    {
+                        state.mock_caller.assume("administrative-file-acls");
                     } else if dll_file_name.ends_with("StdUtils.dll")
                         && std_utils::call(&function, &mut stack)
                     {

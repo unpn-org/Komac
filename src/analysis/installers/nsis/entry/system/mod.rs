@@ -43,6 +43,10 @@ impl MockCaller {
         &self.kernel32
     }
 
+    pub fn assume(&mut self, domain: &'static str) {
+        self.engine.assume(domain);
+    }
+
     /// Saves or restores the general NSIS registers for `System::Store`.
     ///
     /// The private register stack contains `$0` through `$9` and `$R0` through `$R9`.
