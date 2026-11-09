@@ -22,6 +22,7 @@ pub enum Kind {
 pub enum Io {
     #[default]
     None,
+    Null,
     Stack,
     Register(usize),
     Literal(String),
@@ -130,6 +131,9 @@ fn selector(input: &str) -> Option<(Io, &str)> {
         return Some((Io::Literal(value), rest));
     }
     let first = input.chars().next()?;
+    if first == 'n' {
+        return Some((Io::Null, &input[1..]));
+    }
     if matches!(first, 's' | 'S') {
         return Some((Io::Stack, &input[1..]));
     }
