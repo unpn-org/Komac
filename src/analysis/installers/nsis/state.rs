@@ -502,6 +502,23 @@ mod tests {
     }
 
     #[test]
+    fn copying_past_the_start_of_a_symbolic_path_terminates_a_backwards_scan() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0$EXEDIR\0-7\0-8\0-2147483648\x001\0", &[], &mut read);
+        for (offset, expected) in [(9, "$"), (12, ""), (15, "")] {
+            Entry::AssignVar {
+                variable: I32::ZERO,
+                string_offset: I32::new(1),
+                max_length: I32::new(27),
+                start_position: I32::new(offset),
+            }
+            .execute(&mut state)
+            .unwrap();
+            assert_eq!(state.variables.get(&0), Some(expected));
+        }
+    }
+
+    #[test]
     fn integer_comparison_uses_its_encoded_width_and_signedness() {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
         let mut state = state(b"\0-4294967296\0-1\0", &[], &mut read);
