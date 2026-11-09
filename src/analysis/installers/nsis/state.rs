@@ -1,4 +1,6 @@
 use std::{
+    borrow::Cow,
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     io::{self, Cursor},
 };
@@ -23,6 +25,23 @@ use crate::analysis::installers::nsis::{
     version::NsisVersion,
 };
 
+#[derive(Clone)]
+enum CachedString<'data> {
+    Literal(NsisCow<'data>),
+    Variable(usize),
+}
+
+type StringCache<'data> = HashMap<(i32, NsisVersion, NsisVersion), CachedString<'data>>;
+
+impl CachedString<'_> {
+    fn value<'a>(&'a self, variables: &'a Variables<'_>, version: NsisVersion) -> NsisCow<'a> {
+        match self {
+            Self::Literal(value) => NsisCow::Borrowed(value.as_nsis_str()),
+            Self::Variable(index) => NsVar::value(*index, variables, version),
+        }
+    }
+}
+
 pub struct NsisState<'data> {
     pub read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     pub str_block: &'data [u8],
@@ -41,6 +60,7 @@ pub struct NsisState<'data> {
     pub mock_caller: MockCaller,
     version: NsisVersion,
     string_version: NsisVersion,
+    string_cache: RefCell<StringCache<'data>>,
     pub section_flags: Vec<i32>,
     file_positions: Vec<Option<u64>>,
     entry_index: usize,
@@ -72,6 +92,7 @@ impl<'data> NsisState<'data> {
             mock_caller: MockCaller::new(),
             version: NsisVersion::default(),
             string_version: NsisVersion::default(),
+            string_cache: RefCell::new(HashMap::new()),
             file_positions: Vec::new(),
             entry_index: 0,
             section_flags: header
@@ -164,6 +185,15 @@ impl<'data> NsisState<'data> {
             .any(|key| PORTABLE_ENVIRONMENT_VARIABLES.contains(&&**key))
     }
 
+    fn variable_string(&self, index: usize) -> NsisCow<'data> {
+        let value = NsVar::value(index, &self.variables, self.version);
+        if value.is_unicode() == self.is_unicode() {
+            NsisCow::Owned(value.into_owned())
+        } else {
+            self.encode(&value.to_string_lossy()).into()
+        }
+    }
+
     /// Resolves the string at `relative_offset` in the strings block, substituting any variables,
     /// shell folders, and language strings it references. A negative offset refers to a string in
     /// the language table. The string is borrowed from the strings block when it needs no
@@ -180,8 +210,15 @@ impl<'data> NsisState<'data> {
         if depth >= 64 {
             return NsisCow::Borrowed(NsisStr::error());
         }
-        // The strings block starts with a UTF-16 null byte if it is Unicode
-        let unicode = self.is_unicode();
+        let cache_key = (relative_offset, self.version, self.string_version);
+        if let Some(cached) = self.string_cache.borrow().get(&cache_key) {
+            return match cached {
+                CachedString::Literal(value) => value.clone(),
+                CachedString::Variable(index) => self.variable_string(*index),
+            };
+        }
+        // The strings block starts with a UTF-16 null byte if it is Unicode.
+        let unicode = self.str_block.starts_with(b"\0\0");
 
         // Double the offset if the string is Unicode as each character will be 2 bytes
         let offset = if relative_offset.is_negative() {
@@ -216,7 +253,7 @@ impl<'data> NsisState<'data> {
 
         let string_bytes = &offset_slice[..string_end_index];
         if unicode && string_bytes.len() % size_of::<u16>() != 0 {
-            return Cow::Borrowed("$ERROR");
+            return NsisCow::Borrowed(NsisStr::error());
         }
 
         let string_chars = if unicode {
@@ -235,6 +272,26 @@ impl<'data> NsisState<'data> {
             }
         };
 
+        // Cache the reference, not its value: registers change during execution.
+        let reference = match string_chars {
+            Either::Left([code, index]) => Some((normalize_code(code.get()), index.get())),
+            Either::Right([code, low, high]) => {
+                Some((u16::from(*code), u16::from_le_bytes([*low, *high])))
+            }
+            _ => None,
+        };
+        if let Some((code, index)) = reference
+            && NsCode::try_new_with_version(code, self.string_version).is_some_and(NsCode::is_var)
+        {
+            let index = usize::from(if unicode && self.is_park() {
+                index & 0x7FFF
+            } else {
+                decode_number_from_char(index)
+            });
+            self.cache_string(cache_key, CachedString::Variable(index));
+            return self.variable_string(index);
+        }
+
         // Check whether the string contains any special characters that need to be decoded
         let contains_code = match string_chars {
             Either::Left(chars) => chars
@@ -247,7 +304,12 @@ impl<'data> NsisState<'data> {
 
         // If the string doesn't have any special characters, we can just decode it normally
         if !contains_code {
-            return bound_string(NsisCow::Borrowed(NsisStr::from_bytes(string_bytes, unicode)));
+            let value = bound_string(NsisCow::Borrowed(NsisStr::from_bytes(
+                string_bytes,
+                unicode,
+            )));
+            self.cache_string(cache_key, CachedString::Literal(value.clone()));
+            return value;
         }
 
         // Create an iterator of characters represented as an unsigned 16-bit integer
@@ -326,11 +388,58 @@ impl<'data> NsisState<'data> {
     /// Resolves the string at `relative_offset` and parses it as a decimal integer, or as
     /// hexadecimal if it starts with `0x`. Returns `0` if the string is not a valid integer.
     pub fn get_int(&self, relative_offset: i32) -> i32 {
-        parse_int(&self.get_string(relative_offset).to_string_lossy())
+        self.with_string(relative_offset, |value| parse_int(&value.to_string_lossy()))
     }
 
     pub fn get_int64(&self, relative_offset: i32) -> i64 {
-        parse_int64(&self.get_string(relative_offset).to_string_lossy())
+        self.with_string(relative_offset, |value| {
+            parse_int64(&value.to_string_lossy())
+        })
+    }
+
+    pub fn with_string<T>(&self, offset: i32, read: impl FnOnce(NsisStr<'_>) -> T) -> T {
+        if let Some(cached) =
+            self.string_cache
+                .borrow()
+                .get(&(offset, self.version, self.string_version))
+        {
+            return read(cached.value(&self.variables, self.version).as_nsis_str());
+        }
+        read(self.get_string(offset).as_nsis_str())
+    }
+
+    pub fn strings_equal(&self, left: i32, right: i32, case_sensitive: bool) -> bool {
+        let compare = |left: NsisStr<'_>, right: NsisStr<'_>| {
+            if case_sensitive {
+                left == right
+            } else {
+                left.eq_ignore_ascii_case(right)
+            }
+        };
+        {
+            let cache = self.string_cache.borrow();
+            if let (Some(left), Some(right)) = (
+                cache.get(&(left, self.version, self.string_version)),
+                cache.get(&(right, self.version, self.string_version)),
+            ) {
+                return compare(
+                    left.value(&self.variables, self.version).as_nsis_str(),
+                    right.value(&self.variables, self.version).as_nsis_str(),
+                );
+            }
+        }
+        compare(
+            self.get_string(left).as_nsis_str(),
+            self.get_string(right).as_nsis_str(),
+        )
+    }
+
+    fn cache_string(&self, key: (i32, NsisVersion, NsisVersion), value: CachedString<'data>) {
+        // Bound retained strings even for malformed blocks with overlapping offsets.
+        let mut cache = self.string_cache.borrow_mut();
+        if cache.len() < 4096 {
+            cache.insert(key, value);
+        }
     }
 
     pub fn ini_file(&mut self, path: &str, create: bool) -> io::Result<&mut super::ini::IniFile> {
@@ -514,6 +623,21 @@ mod tests {
     }
 
     #[test]
+    fn cached_register_references_observe_updates_and_removals() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0\0\x03\0\x80\x80\0\0", &[], &mut read);
+        state.variables.insert(0, "42");
+        assert_eq!(state.get_string(1), "42");
+        assert_eq!(state.get_int(1), 42);
+        state.variables.insert(0, "-7");
+        assert_eq!(state.get_int64(1), -7);
+        assert_eq!(state.get_string(1), "-7");
+        state.variables.remove(&0);
+        assert_eq!(state.get_string(1), "");
+        assert_eq!(state.get_int(1), 0);
+    }
+
+    #[test]
     fn copying_past_the_start_of_a_symbolic_path_terminates_a_backwards_scan() {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
         let mut state = state(b"\0$EXEDIR\0-7\0-8\0-2147483648\x001\0", &[], &mut read);
@@ -580,6 +704,7 @@ mod tests {
             mock_caller: MockCaller::new(),
             version: NsisVersion::v3(),
             string_version: NsisVersion::v3(),
+            string_cache: RefCell::new(HashMap::new()),
             file_positions: Vec::new(),
             entry_index: 0,
             section_flags: Vec::new(),
