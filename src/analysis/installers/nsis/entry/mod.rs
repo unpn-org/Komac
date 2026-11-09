@@ -39,7 +39,7 @@ use super::{
     file_system::RelativeLocation,
     registry::{RegRoot, RegType},
     state::NsisState,
-    strings::{NsisCow, PredefinedVar},
+    strings::PredefinedVar,
 };
 use crate::analysis::installers::pe::{PE, VSVersionInfo};
 
@@ -830,38 +830,24 @@ impl Entry {
                 let max_length = state.get_int(max_length.get());
 
                 let start_position = state.get_int(start_position.get());
-                let length = source.len();
-
-                let mut result = source.clone();
-
-                if !source.is_empty() {
-                    // Get the start position as a usize, or add the length to it to turn a
-                    // negative offset into a positive one.
-                    if let Ok(start) = usize::try_from(start_position)
-                        .or_else(|_| usize::try_from(start_position + length as i32))
-                        .map(|start| start.min(length))
-                    {
-                        let remaining = length - start;
-
-                        let new_length = if max_length == 0 {
-                            remaining
-                        } else if max_length.is_negative() {
-                            usize::try_from(remaining as i32 + max_length).unwrap_or_default()
-                        } else {
-                            usize::try_from(max_length).unwrap_or_default()
-                        }
-                        .min(remaining);
-
-                        let range = start..start + new_length;
-
-                        result = match result {
-                            NsisCow::Borrowed(string) => NsisCow::Borrowed(string.slice(range)),
-                            NsisCow::Owned(string) => {
-                                NsisCow::Owned(string.as_nsis_str().slice(range).to_nsis_string())
-                            }
-                        };
-                    }
-                }
+                // NSIS Unicode string offsets and lengths count UTF-16 code
+                // units, including both halves of supplementary characters.
+                let count = source.len() as i32;
+                let start = if start_position < 0 {
+                    count.saturating_add(start_position)
+                } else {
+                    start_position
+                };
+                // NSIS returns an empty string when a negative offset extends
+                // before the source, rather than copying its first character.
+                let start = if start < 0 { count } else { start.min(count) } as usize;
+                let remaining = (source.len() - start) as i32;
+                let length = match max_length.cmp(&0) {
+                    Ordering::Equal => remaining,
+                    Ordering::Less => remaining.saturating_add(max_length).max(0),
+                    Ordering::Greater => max_length.min(remaining),
+                } as usize;
+                let result = source.as_nsis_str().slice(start..start + length).to_nsis_string();
 
                 match (max_length, start_position) {
                     (0, 0) => debug!(r#"StrCpy ${index} "{source}" # = "{result}""#),
