@@ -68,11 +68,13 @@ impl NsCode {
         (self.is_v3() && version.is_v3()) || (self.is_v2() && version.is_v2())
     }
 
-    pub fn is_code<T>(code: T, version: NsisVersion) -> bool
-    where
-        T: TryInto<Self>,
-    {
-        code.try_into().is_ok_and(|code| code.is_version(version))
+    #[inline]
+    pub fn is_code(code: impl Into<u16>, version: NsisVersion) -> bool {
+        match code.into() {
+            1..=4 => version.is_v3(),
+            252..=255 => version.is_v2(),
+            _ => false,
+        }
     }
 }
 
