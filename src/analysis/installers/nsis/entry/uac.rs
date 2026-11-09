@@ -4,6 +4,15 @@ use crate::analysis::installers::nsis::Variables;
 
 /// Answers UAC account queries for an administrative, non-forked installation.
 pub fn query(function: &str, variables: &mut Variables<'_>, stack: &mut Vec<Cow<'_, str>>) -> bool {
+    if function == "_" && stack.last().is_some_and(|command| &**command == "0") {
+        // UAC_RunElevated returns immediately for the simulated administrative
+        // process: no child is started and the caller continues installation.
+        stack.pop();
+        variables.insert(0, "0"); // ERROR_SUCCESS
+        variables.insert(1, "2"); // Already running at high integrity
+        variables.insert(3, "1"); // Member of the administrators group
+        return true;
+    }
     let (value, to_stack) = match function {
         "IsAdmin" => ("1", false),
         "_" => match stack.last().map(|value| &**value) {
@@ -51,10 +60,23 @@ mod tests {
     }
 
     #[test]
-    fn elevation_and_callbacks_are_not_simulated_as_successful_queries() {
+    fn elevation_reports_an_already_elevated_process_without_a_child_exit_code() {
+        let mut variables = Variables::new();
+        variables.insert(2, "unchanged");
+        let mut stack = vec![Cow::Borrowed("saved"), Cow::Borrowed("0")];
+        assert!(query("_", &mut variables, &mut stack));
+        assert_eq!(variables.get(&0), Some("0"));
+        assert_eq!(variables.get(&1), Some("2"));
+        assert_eq!(variables.get(&2), Some("unchanged"));
+        assert_eq!(variables.get(&3), Some("1"));
+        assert_eq!(stack, ["saved"]);
+    }
+
+    #[test]
+    fn callbacks_are_not_simulated_as_successful_queries() {
         let mut variables = Variables::new();
         variables.insert(0, "saved");
-        for command in ["0", "1", "4", "5", "2bad"] {
+        for command in ["1", "4", "5", "2bad"] {
             let mut stack = vec![Cow::Borrowed(command)];
             assert!(!query("_", &mut variables, &mut stack));
             assert_eq!(stack, [command]);
