@@ -154,7 +154,7 @@ impl Engine {
 
     pub fn input(io: &Io, context: &mut Context<'_, '_>) -> String {
         match io {
-            Io::None => String::new(),
+            Io::None | Io::Null => String::new(),
             Io::Literal(value) => value.clone(),
             Io::Stack => context.stack.pop().map(Cow::into_owned).unwrap_or_default(),
             Io::Register(index) => context
@@ -264,7 +264,11 @@ impl Engine {
         temporaries: &mut Vec<u64>,
     ) -> Option<Argument> {
         let input = Self::input(&spec.input, context);
-        let value = self.encode(spec, &input, temporaries)?;
+        let value = if spec.input == Io::Null {
+            0
+        } else {
+            self.encode(spec, &input, temporaries)?
+        };
         let cell = if spec.reference {
             let address = self.memory.alloc(self.scalar_size(spec.kind))?;
             temporaries.push(address);
@@ -282,7 +286,7 @@ impl Engine {
     }
 
     fn finish(&self, argument: &Argument, context: &mut Context<'_, '_>) {
-        if argument.spec.output == Io::None {
+        if matches!(argument.spec.output, Io::None | Io::Null) {
             return;
         }
         let value = argument.cell.map_or(Some(argument.value), |cell| {
