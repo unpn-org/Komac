@@ -8,7 +8,7 @@ use zerocopy::{FromBytes, LE, U16};
 
 use super::{state::NsisState, strings::code::NsCode};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct NsisVersion {
     major: u8,
     minor: u8,
