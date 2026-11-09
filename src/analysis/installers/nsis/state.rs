@@ -368,16 +368,17 @@ impl<'data> NsisState<'data> {
         let mut position = position;
         let mut calls = Vec::new();
         let mut total_steps = 0usize;
-        // Create a watchdog counter to detect infinite loops
-        let mut watchdog_counter = 0;
-
-        // Set an infinite loop threshold to the number of total entries, as we're only simulating
-        // execution of a segment, not all code
-        let infinite_loop_threshold = self.entries.len();
-
+        // File callbacks can run string-processing loops for thousands of payload
+        // files. Bound the whole simulation without treating each script-sized
+        // batch of instructions as an infinite loop.
+        let instruction_budget = self
+            .entries
+            .len()
+            .saturating_mul(1024)
+            .clamp(128, 64 * 1024 * 1024);
         while let Ok(index) = usize::try_from(position) {
             total_steps += 1;
-            if total_steps > self.entries.len().saturating_mul(128).max(128) {
+            if total_steps > instruction_budget {
                 return Err(EntryError::InfiniteLoop);
             }
             let span = debug_span!("", "{}", index + 1);
@@ -388,15 +389,18 @@ impl<'data> NsisState<'data> {
             // Interpret calls using an explicit stack: recursive Rust calls can overflow
             // before the loop watchdog has an opportunity to run.
             if let Entry::Call { address } = entry {
+                let address = self.resolve_address(address.get())?;
+                // ExecuteCodeSegment(-1) is a no-op in NSIS, including Call $var
+                // when the variable is empty or zero.
+                if address == 0 {
+                    position += 1;
+                    continue;
+                }
                 if calls.len() >= 128 {
                     return Err(EntryError::InfiniteLoop);
                 }
-                calls.push((position + 1, watchdog_counter));
-                position = self
-                    .resolve_address(address.get())?
-                    .checked_sub(1)
-                    .ok_or(EntryError::Invalid)?;
-                watchdog_counter = 0;
+                calls.push(position + 1);
+                position = address - 1;
                 continue;
             }
             let address = entry.execute(self)?;
@@ -405,16 +409,11 @@ impl<'data> NsisState<'data> {
                 return Ok(entry);
             }
             if entry == Entry::Return {
-                if let Some((return_position, counter)) = calls.pop() {
+                if let Some(return_position) = calls.pop() {
                     position = return_position;
-                    watchdog_counter = counter + 1;
                     continue;
                 }
                 return Ok(entry);
-            }
-
-            if watchdog_counter >= infinite_loop_threshold {
-                return Err(EntryError::InfiniteLoop);
             }
 
             let resolved_address = self.resolve_address(address)?;
@@ -423,8 +422,6 @@ impl<'data> NsisState<'data> {
             } else {
                 position = resolved_address - 1; // -1 because addresses are encoded as +1
             }
-
-            watchdog_counter += 1;
         }
 
         Ok(Entry::Return)
@@ -432,11 +429,12 @@ impl<'data> NsisState<'data> {
 
     pub fn resolve_address(&self, address: i32) -> Result<i32, EntryError> {
         if address.is_negative() {
-            self.variables
+            let address = self
+                .variables
                 .get(&((address.unsigned_abs() - 1) as usize))
                 .map(|address| parse_int(&address.to_string_lossy()))
-                .filter(|&address| address > 0)
-                .ok_or(EntryError::Invalid)
+                .unwrap_or_default();
+            (address >= 0).then_some(address).ok_or(EntryError::Invalid)
         } else {
             Ok(address)
         }
@@ -868,6 +866,43 @@ mod tests {
     }
 
     #[test]
+    fn file_enumeration_can_repeat_more_times_than_the_script_has_instructions() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let entries = [
+            Entry::FindNext {
+                output: I32::ZERO,
+                handle: I32::new(1),
+            },
+            Entry::IfFlag {
+                on: I32::new(3),
+                off: I32::new(1),
+                r#type: ExecFlag::Errors,
+                new_value_mask: I32::ZERO,
+            },
+            Entry::Return,
+        ];
+        let mut state = state(b"\0", &entries, &mut read);
+        state.variables.insert(1, "0");
+        state
+            .find_handles
+            .insert(0, (0..100).map(|i| format!("file{i}.dll")).collect());
+        assert_eq!(state.execute_code_segment(0), Ok(Entry::Return));
+        assert_eq!(state.find_handles[&0].len(), 0);
+    }
+
+    #[test]
+    fn unconditional_loops_still_exhaust_the_total_instruction_budget() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let entries = [Entry::Jump {
+            address: I32::new(1),
+        }];
+        assert_eq!(
+            state(b"\0", &entries, &mut read).execute_code_segment(0),
+            Err(EntryError::InfiniteLoop)
+        );
+    }
+
+    #[test]
     fn bounds_recursive_calls() {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
         let entries = [Entry::Call {
@@ -880,11 +915,23 @@ mod tests {
     }
 
     #[test]
-    fn handles_unset_indirect_address() {
+    fn empty_and_zero_indirect_branches_fall_through() {
         let mut read = |_| Ok(Cursor::new(Vec::new()));
-        assert_eq!(
-            state(b"\0", &[], &mut read).resolve_address(-1),
-            Err(EntryError::Invalid)
-        );
+        let entries = [
+            Entry::Call {
+                address: I32::new(-1),
+            },
+            Entry::Jump {
+                address: I32::new(-1),
+            },
+            Entry::Return,
+        ];
+        let mut state = state(b"\0", &entries, &mut read);
+        for value in ["", "0"] {
+            state.variables.insert(0, value);
+            assert_eq!(state.resolve_address(-1), Ok(0));
+            assert_eq!(state.execute_code_segment(0), Ok(Entry::Return));
+            assert_eq!(state.entry_index, 2);
+        }
     }
 }
