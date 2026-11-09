@@ -7,17 +7,29 @@ use super::strings::{NsisCow, NsisStr, NsisString, PredefinedVar};
 // NSIS large-string builds use at most 8192 native code units.
 pub(super) const MAX_STRING_LENGTH: usize = 8192;
 
+/// Apply StrCpy offsets directly to native ANSI or UTF-16 code units.
+pub(super) fn copy_string(source: NsisStr<'_>, max_length: i32, start_position: i32) -> NsisString {
+    let count = source.len() as i32;
+    let start = if start_position < 0 {
+        count.saturating_add(start_position)
+    } else {
+        start_position
+    };
+    let start = if start < 0 { count } else { start.min(count) } as usize;
+    let remaining = count as usize - start;
+    let length = match max_length.cmp(&0) {
+        std::cmp::Ordering::Equal => remaining,
+        std::cmp::Ordering::Less => (remaining as i32).saturating_add(max_length).max(0) as usize,
+        std::cmp::Ordering::Greater => (max_length as usize).min(remaining),
+    };
+    source.slice(start..start + length).to_nsis_string()
+}
+
 pub(super) trait NsisStringExt {
-    fn push_bounded(&mut self, value: &str);
     fn push_bounded_nsis(&mut self, value: NsisStr<'_>);
 }
 
 impl NsisStringExt for NsisString {
-    fn push_bounded(&mut self, value: &str) {
-        let value = NsisString::from_str(value, self.is_unicode());
-        self.push_bounded_nsis(value.as_nsis_str());
-    }
-
     fn push_bounded_nsis(&mut self, value: NsisStr<'_>) {
         let remaining = MAX_STRING_LENGTH.saturating_sub(self.len());
         self.push_nsis_str(value.slice(0..value.len().min(remaining)));
@@ -108,8 +120,31 @@ impl fmt::Debug for Variables<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_STRING_LENGTH, Variables, NsisString};
+    use super::{MAX_STRING_LENGTH, NsisString, Variables, copy_string};
     use crate::analysis::installers::nsis::{strings::var::NsVar, version::NsisVersion};
+
+    #[test]
+    fn string_copy_preserves_utf16_offsets_and_negative_lengths() {
+        for (input, length, start, expected) in [
+            ("abcdef", 2, 1, "bc"),
+            ("abcdef", -1, 0, "abcde"),
+            ("abcdef", 1, -7, ""),
+            ("a😀b", 2, 1, "😀"),
+            ("a😀b", -1, 0, "a😀"),
+            ("a😀b", 1, -1, "b"),
+            ("a😀b", 1, 2, "�"),
+        ] {
+            assert_eq!(
+                copy_string(
+                    NsisString::from_str(input, true).as_nsis_str(),
+                    length,
+                    start
+                )
+                .into_string_lossy(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn self_appending_variable_stays_bounded() {

@@ -830,26 +830,9 @@ impl Entry {
 
                 // Maximum length of the string in code units (TCHARs)
                 let max_length = state.get_int(max_length.get());
-
                 let start_position = state.get_int(start_position.get());
-                // NSIS Unicode string offsets and lengths count UTF-16 code
-                // units, including both halves of supplementary characters.
-                let count = source.len() as i32;
-                let start = if start_position < 0 {
-                    count.saturating_add(start_position)
-                } else {
-                    start_position
-                };
-                // NSIS returns an empty string when a negative offset extends
-                // before the source, rather than copying its first character.
-                let start = if start < 0 { count } else { start.min(count) } as usize;
-                let remaining = (source.len() - start) as i32;
-                let length = match max_length.cmp(&0) {
-                    Ordering::Equal => remaining,
-                    Ordering::Less => remaining.saturating_add(max_length).max(0),
-                    Ordering::Greater => max_length.min(remaining),
-                } as usize;
-                let result = source.as_nsis_str().slice(start..start + length).to_nsis_string();
+                let result =
+                    super::variables::copy_string(source.as_nsis_str(), max_length, start_position);
 
                 match (max_length, start_position) {
                     (0, 0) => debug!(r#"StrCpy ${index} "{source}" # = "{result}""#),
@@ -879,19 +862,13 @@ impl Entry {
                 jump_if_not_equal,
                 case_sensitive,
             } => {
-                let str_1 = state.get_string(str_1.get());
-                let str_2 = state.get_string(str_2.get());
-
+                let equal =
+                    state.strings_equal(str_1.get(), str_2.get(), *case_sensitive != I32::ZERO);
                 debug!(
-                    r#"StrCmp: "{str_1}" "{str_2}" eq: {jump_if_equal} ne: {jump_if_not_equal}"#
+                    r#"StrCmp: "{}" "{}" eq: {jump_if_equal} ne: {jump_if_not_equal}"#,
+                    state.get_string(str_1.get()),
+                    state.get_string(str_2.get())
                 );
-
-                let equal = match *case_sensitive {
-                    I32::ZERO => str_1
-                        .as_nsis_str()
-                        .eq_ignore_ascii_case(str_2.as_nsis_str()), // Case-insensitive
-                    _ => str_1 == str_2, // Case-sensitive
-                };
 
                 return if equal {
                     Ok(jump_if_equal.get())
