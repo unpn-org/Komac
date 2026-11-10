@@ -16,7 +16,6 @@ use winget_types::{PackageIdentifier, PackageVersion};
 
 use crate::{
     commands::utils::RateLimit,
-    environment::CI,
     github::{WINGET_PKGS_FULL_NAME, client::GitHub},
     prompts::{handle_inquire_error, text::confirm_prompt},
     token::TokenManager,
@@ -115,40 +114,42 @@ impl RemoveVersion {
             &self.package_identifier
         );
 
-        let versions_to_remove = self.package_version.as_ref().map_or_else(
+        let requested_versions = self.package_version.as_ref().map_or_else(
             || versions.iter().collect::<Vec<_>>(),
             |version| vec![version],
         );
-        for version in &versions_to_remove {
+        let mut versions_to_remove = Vec::with_capacity(requested_versions.len());
+        for version in requested_versions {
             let Some(pull_request) = github
                 .get_existing_pull_request(&self.package_identifier, version, false)
                 .await?
                 .filter(|pull_request| pull_request.is_open())
             else {
+                versions_to_remove.push(version);
                 continue;
             };
             let created_at = pull_request.created_at.to_zoned(TimeZone::system());
             println!(
-                "There is already {} pull request for {} {} that was created on {} at {}",
-                pull_request.state,
+                "Skipping {} {}: there is already {} pull request for this version that was created on {} at {}",
                 self.package_identifier,
                 version,
+                pull_request.state,
                 created_at.date(),
                 created_at.time()
             );
             println!("{}", pull_request.url.blue());
+        }
 
-            if *CI || !confirm_prompt("Would you like to proceed?")? {
-                return Ok(());
-            }
+        if versions_to_remove.is_empty() {
+            return Ok(());
         }
 
         let removal_target = self.package_version.as_ref().map_or_else(
             || {
                 format!(
-                    "{} (all {} versions)",
+                    "{} ({} versions)",
                     self.package_identifier,
-                    versions.len()
+                    versions_to_remove.len()
                 )
             },
             |version| format!("{} version {version}", self.package_identifier),
