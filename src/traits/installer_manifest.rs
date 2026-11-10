@@ -165,15 +165,16 @@ impl InstallerManifestExt for InstallerManifest {
             .map(|installer| installer.inherit_from(self))
             .collect();
 
+        let is_archive_or_portable = |installer: &Installer| {
+            matches!(
+                installer.effective_installer_type().or(installer.r#type),
+                Some(InstallerType::Zip | InstallerType::Portable)
+            )
+        };
         let registered_product_codes = self
             .installers
             .iter()
-            .filter(|installer| {
-                !matches!(
-                    installer.r#type,
-                    Some(InstallerType::Zip | InstallerType::Portable)
-                )
-            })
+            .filter(|installer| !is_archive_or_portable(installer))
             .flat_map(|installer| {
                 installer.product_code.as_deref().into_iter().chain(
                     installer
@@ -192,9 +193,7 @@ impl InstallerManifestExt for InstallerManifest {
                 installer.nested_installer_type = None;
                 installer.nested_installer_files.clear();
             }
-            if installer.r#type == Some(InstallerType::Portable)
-                || installer.nested_installer_type == Some(NestedInstallerType::Portable)
-            {
+            if installer.effective_installer_type() == Some(InstallerType::Portable) {
                 installer.scope = None;
                 installer.switches = Default::default();
                 installer.upgrade_behavior = None;
@@ -207,10 +206,7 @@ impl InstallerManifestExt for InstallerManifest {
             ) {
                 installer.platform = Default::default();
             }
-            if matches!(
-                installer.r#type,
-                Some(InstallerType::Zip | InstallerType::Portable)
-            ) {
+            if is_archive_or_portable(installer) {
                 if installer
                     .product_code
                     .as_ref()
@@ -871,6 +867,52 @@ mod tests {
                 .product_code(),
             Some("zip-arp")
         );
+    }
+
+    #[test]
+    fn normalization_keeps_registration_on_the_installing_zip() {
+        let mut manifest = InstallerManifest {
+            package_version: "17.2.10.21".parse().unwrap(),
+            r#type: Some(InstallerType::Zip),
+            product_code: Some("LoxoneConfig_is1".into()),
+            apps_and_features_entries: serde_saphyr::from_str(
+                "- DisplayVersion: '17.2'\n  ProductCode: LoxoneConfig_is1",
+            )
+            .unwrap(),
+            installers: [NestedInstallerType::Inno, NestedInstallerType::Portable]
+                .into_iter()
+                .map(|nested_installer_type| Installer {
+                    nested_installer_type: Some(nested_installer_type),
+                    url: format!("https://example.com/{nested_installer_type}.zip")
+                        .parse()
+                        .unwrap(),
+                    ..Installer::default()
+                })
+                .collect(),
+            ..InstallerManifest::default()
+        };
+        let default_locale = DefaultLocaleManifest {
+            package_version: manifest.package_version.clone(),
+            ..DefaultLocaleManifest::default()
+        };
+
+        manifest.normalize_installers(&default_locale);
+
+        let installer = |nested_type| {
+            manifest
+                .inherit_manifest_properties()
+                .find(|installer| installer.nested_installer_type == Some(nested_type))
+                .unwrap()
+        };
+        let inno = installer(NestedInstallerType::Inno);
+        assert_eq!(inno.product_code.as_deref(), Some("LoxoneConfig_is1"));
+        assert_eq!(
+            serde_json::to_value(&inno.apps_and_features_entries).unwrap(),
+            serde_json::json!([{"DisplayVersion": "17.2", "ProductCode": "LoxoneConfig_is1"}])
+        );
+        let portable = installer(NestedInstallerType::Portable);
+        assert_eq!(portable.product_code, None);
+        assert!(portable.apps_and_features_entries.is_empty());
     }
 
     #[test]
