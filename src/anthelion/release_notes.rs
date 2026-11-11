@@ -128,6 +128,19 @@ mod tests {
     }
 
     #[test]
+    fn html_conversion_flattens_unbulleted_list_wrappers() {
+        let html = Html::new(
+            "<p>Changes</p><ul><li>Before</li><li style=\"list-style-type: none;\">\n<ul>\
+             <li>Fix</li><li>Feature<ul><li>Detail</li></ul></li></ul>\n</li><li>After</li></ul>"
+                .to_owned(),
+        );
+        assert_eq!(
+            html_to_plain_text(&html).as_deref(),
+            Some("Changes\n- Before\n- Fix\n- Feature\n  - Detail\n- After")
+        );
+    }
+
+    #[test]
     fn formats_markdown() {
         assert_eq!(
             markdown_to_plain_text("# Changes\n\n- Fast\n- Reliable\n"),

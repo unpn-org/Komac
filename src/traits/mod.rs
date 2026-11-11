@@ -4,10 +4,13 @@ mod installer_manifest;
 pub mod name;
 pub mod path;
 
-use std::{cell::Cell, mem, sync::LazyLock};
+use std::{mem, rc::Rc, sync::LazyLock};
 
 pub use ascii_ext::AsciiExt;
-use html2text::render::{TaggedLine, TextDecorator};
+use html2text::{
+    Comment, Element, Handle, config, local_name,
+    render::{TaggedLine, TextDecorator},
+};
 pub use installer_manifest::InstallerManifestExt;
 #[cfg(feature = "cli")]
 pub use name::Name;
@@ -86,9 +89,7 @@ impl IntoWingetArchitecture for PE {
 }
 
 #[derive(Default)]
-struct GitHubHtmlDecorator {
-    seen_header: Cell<bool>,
-}
+struct GitHubHtmlDecorator;
 
 const HEADER_MARKER: &str = "__KOMAC_HEADER__ ";
 
@@ -144,7 +145,6 @@ impl TextDecorator for GitHubHtmlDecorator {
     }
 
     fn header_prefix(&self, _level: usize) -> String {
-        self.seen_header.set(true);
         String::from(HEADER_MARKER)
     }
 
@@ -161,7 +161,7 @@ impl TextDecorator for GitHubHtmlDecorator {
     }
 
     fn make_subblock_decorator(&self) -> Self {
-        Self::default()
+        Self
     }
 
     fn finalise(&mut self, _links: Vec<String>) -> Vec<TaggedLine<()>> {
@@ -176,34 +176,94 @@ pub trait FromHtml {
 }
 
 fn add_section_spacing(text: &str) -> String {
-    let mut output = String::with_capacity(text.len() + 32);
+    let mut output = String::with_capacity(text.len());
     let mut seen_header = false;
     let mut previous_line_blank = true;
 
     for line in text.lines() {
-        let is_blank = line.trim().is_empty();
-        if let Some(header) = line.strip_prefix(HEADER_MARKER) {
-            if seen_header && !previous_line_blank {
-                output.push('\n');
-            }
-            output.push_str(header);
+        let is_header = line.starts_with(HEADER_MARKER);
+        if is_header && seen_header && !previous_line_blank {
             output.push('\n');
-            seen_header = true;
-            previous_line_blank = false;
-            continue;
         }
-
-        output.push_str(line);
+        // Headings in tables and blockquotes can place markers inside a line.
+        // Copy directly into the output without allocating a replacement per line.
+        for part in line.split(HEADER_MARKER) {
+            output.push_str(part);
+        }
         output.push('\n');
-        previous_line_blank = is_blank;
+        seen_header |= is_header;
+        previous_line_blank = line.trim().is_empty();
     }
 
     output
 }
 
+fn unbulleted_nested_list(item: &Handle) -> Option<Handle> {
+    let Element { name, attrs, .. } = &item.data else {
+        return None;
+    };
+    if name.local != local_name!("li") {
+        return None;
+    }
+    let attrs = attrs.borrow();
+    let style = &attrs
+        .iter()
+        .find(|attr| attr.name.local == local_name!("style"))?
+        .value;
+    let (_, value) = style
+        .rsplit(';')
+        .filter_map(|declaration| declaration.split_once(':'))
+        .find(|(property, _)| property.trim().eq_ignore_ascii_case("list-style-type"))?;
+    if !value.trim().eq_ignore_ascii_case("none") {
+        return None;
+    }
+
+    let children = item.children.borrow();
+    let mut content = children.iter().filter(|child| match child.data {
+        Comment { .. } => false,
+        Element { .. } => true,
+        _ => {
+            let mut text = Vec::new();
+            child.serialize(&mut text).is_err() || !text.iter().all(u8::is_ascii_whitespace)
+        }
+    });
+    let list = content.next()?;
+    if content.next().is_none()
+        && matches!(&list.data, Element { name, .. } if name.local == local_name!("ul"))
+    {
+        return Some(Rc::clone(list));
+    }
+    None
+}
+
+fn flatten_unbulleted_lists(document: &Handle) {
+    let mut pending = vec![Rc::clone(document)];
+    let mut lists = Vec::new();
+    while let Some(node) = pending.pop() {
+        pending.extend(node.children.borrow().iter().cloned());
+        if matches!(&node.data, Element { name, .. } if name.local == local_name!("ul")) {
+            lists.push(node);
+        }
+    }
+
+    // Process inner lists first so that promoting their items also removes nested wrappers.
+    for list in lists.into_iter().rev() {
+        let mut children = list.children.borrow_mut();
+        for item in mem::take(&mut *children) {
+            if let Some(nested) = unbulleted_nested_list(&item) {
+                children.extend(nested.children.take().into_iter().inspect(|child| {
+                    child.parent.set(Some(Rc::downgrade(&list)));
+                }));
+            } else {
+                children.push(item);
+            }
+        }
+    }
+}
+
 pub(crate) fn html_to_plain_text(html: &Html) -> Option<String> {
     // Strings that have whitespace before newlines get escaped and treated as literal strings
-    // in YAML so this regex identifies any amount of whitespace and duplicate newlines
+    // in YAML so this regex identifies any amount of whitespace and duplicate newlines.
     static NEWLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+\n").unwrap());
     // GitHub release notes often end with compare lines such as:
     // "Full Changelog: v2.14.0...v2.15.0" or "Full Changelog: 2.14.0...2.15.0".
@@ -215,7 +275,12 @@ pub(crate) fn html_to_plain_text(html: &Html) -> Option<String> {
         .unwrap()
     });
 
-    html2text::from_read_with_decorator(html.as_bytes(), usize::MAX, GitHubHtmlDecorator::default())
+    let formatter = config::with_decorator(GitHubHtmlDecorator);
+    let dom = formatter.parse_html(html.as_bytes()).ok()?;
+    flatten_unbulleted_lists(&dom.document);
+    let tree = formatter.dom_to_render_tree(&dom).ok()?;
+    formatter
+        .render_to_string(tree, usize::MAX)
         .ok()
         .and_then(|text| {
             let normalized_text = COMPARE_RANGE_LINE_REGEX.replace_all(&text, "");
@@ -300,6 +365,63 @@ impl LocaleExt for DefaultLocaleManifest {
             .and_then(|values| values.release_notes.take());
         self.manifest_type = Self::TYPE;
         self.update_manifest_version();
+    }
+}
+
+#[cfg(test)]
+mod html_tests {
+    use super::*;
+
+    #[test]
+    fn headings_in_table_cells_do_not_leak_markers() {
+        let html = Html::from(
+            "<table><tr><td><h3>Tile overlay</h3></td>\
+             <td><h3>Lighter renderers</h3></td>\
+             <td><h3>Dependable captures</h3></td></tr></table>",
+        );
+        let text = html_to_plain_text(&html).unwrap();
+
+        assert!(!text.contains("__KOMAC_HEADER__"));
+        for heading in ["Tile overlay", "Lighter renderers", "Dependable captures"] {
+            assert!(text.contains(heading));
+        }
+    }
+
+    #[test]
+    fn nested_headings_do_not_leak_markers() {
+        let html = Html::from("<blockquote><h2>Important</h2><p>Details</p></blockquote>");
+        let text = html_to_plain_text(&html).unwrap();
+
+        assert!(!text.contains("__KOMAC_HEADER__"));
+        assert!(text.contains("> Important"));
+        assert!(text.contains("Details"));
+    }
+
+    #[test]
+    fn top_level_headings_keep_section_spacing() {
+        let html = Html::from("<h2>First</h2><p>Details</p><h2>Second</h2><p>More</p>");
+
+        assert_eq!(
+            html_to_plain_text(&html).as_deref(),
+            Some("First\nDetails\n\nSecond\nMore")
+        );
+    }
+
+    #[test]
+    fn trailing_whitespace_and_duplicate_newlines_are_removed() {
+        let html = Html::from("<pre>First  \n\nSecond\t\n</pre>");
+
+        assert_eq!(html_to_plain_text(&html).as_deref(), Some("First\nSecond"));
+    }
+
+    #[test]
+    fn paragraphs_keep_compact_spacing() {
+        let html = Html::from("<p>First paragraph.</p><p>Second paragraph.</p>");
+
+        assert_eq!(
+            html_to_plain_text(&html).as_deref(),
+            Some("First paragraph.\nSecond paragraph.")
+        );
     }
 }
 
