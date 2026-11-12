@@ -1,4 +1,7 @@
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::{
+    fs::File,
+    io::{self, Cursor, Read, Seek, SeekFrom},
+};
 
 use tracing::warn;
 use zerocopy::LE;
@@ -9,8 +12,9 @@ use crate::{analysis::installers::utils::LzmaStreamHeader, read::ReadBytesExt};
 /// A reader for embedded NSIS files.
 ///
 /// File offsets are taken from `ExtractFile` instructions.
-pub struct FileData<R> {
-    reader: R,
+pub struct FileData<R: Read + Seek> {
+    reader: Option<R>,
+    solid: Option<SolidData<R>>,
     data_offset: u64,
     header_size: u32,
     is_solid: bool,
@@ -18,6 +22,34 @@ pub struct FileData<R> {
     compression: Compression,
     record_width: usize,
     indexed_files: Option<Vec<super::header::indexed::FileRecord>>,
+}
+
+/// Retain the decoder and spool its output so backward reads do not restart
+/// decompression and large solid archives do not have to remain in memory.
+struct SolidData<R: Read + Seek> {
+    decoder: Decoder<R>,
+    cache: File,
+    length: u64,
+}
+
+impl<R: Read + Seek> SolidData<R> {
+    fn ensure(&mut self, end: u64) -> io::Result<()> {
+        if end > self.length {
+            self.cache.seek(SeekFrom::Start(self.length))?;
+            let result = io::copy(
+                &mut self.decoder.by_ref().take(end - self.length),
+                &mut self.cache,
+            );
+            // Keep the cache and decoder aligned even if a read fails after
+            // producing some output.
+            self.length = self.cache.stream_position()?;
+            result?;
+            if self.length < end {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<R: Read + Seek> FileData<R> {
@@ -30,7 +62,8 @@ impl<R: Read + Seek> FileData<R> {
         compression: Compression,
     ) -> Self {
         Self {
-            reader,
+            reader: Some(reader),
+            solid: None,
             data_offset,
             header_size,
             is_solid,
@@ -80,11 +113,12 @@ impl<R: Read + Seek> FileData<R> {
             .and_then(|start| start.checked_add(8))
             .and_then(|start| start.checked_add(file.offset))
             .ok_or(io::ErrorKind::InvalidData)?;
-        self.reader.seek(SeekFrom::Start(start))?;
+        let reader = self.reader.as_mut().unwrap();
+        reader.seek(SeekFrom::Start(start))?;
         let mut parts = vec![(0u64, 0u64)];
         for _ in 1..file.parts {
-            let packed = self.reader.read_t::<zerocopy::U64<LE>>()?.get();
-            let output = self.reader.read_t::<zerocopy::U64<LE>>()?.get();
+            let packed = reader.read_t::<zerocopy::U64<LE>>()?.get();
+            let output = reader.read_t::<zerocopy::U64<LE>>()?.get();
             let &(previous, previous_output) = parts.last().unwrap();
             if packed <= previous || output < previous_output || output > 512 * 1024 * 1024 {
                 return Err(io::ErrorKind::InvalidData.into());
@@ -118,67 +152,31 @@ impl<R: Read + Seek> FileData<R> {
             .checked_sub(4)
             .and_then(|position| position.checked_add(self.record_width as u64))
             .ok_or(io::ErrorKind::InvalidData)?;
-        let mut compression = self.compression;
-        let compressed_size = if self.is_solid {
-            self.reader.seek(SeekFrom::Start(self.data_offset))?;
-            None
+        if self.is_solid {
+            return self.read_solid(position);
+        }
+        let reader = self.reader.as_mut().unwrap();
+        let start = self
+            .data_offset
+            .checked_add(self.non_solid_start_offset)
+            .and_then(|start| start.checked_add(position))
+            .ok_or(io::ErrorKind::InvalidData)?;
+        reader.seek(SeekFrom::Start(start))?;
+        let size = if self.record_width == 8 {
+            reader.read_t::<zerocopy::U64<LE>>()?.get()
         } else {
-            // position includes the four-byte size prefix; seek back to read it.
-            let start = self
-                .data_offset
-                .checked_add(self.non_solid_start_offset)
-                .and_then(|start| start.checked_add(position))
-                .ok_or(io::ErrorKind::InvalidData)?;
-            self.reader.seek(SeekFrom::Start(start))?;
-            let size = if self.record_width == 8 {
-                self.reader.read_t::<zerocopy::U64<LE>>()?.get()
-            } else {
-                u64::from(self.reader.read_u32::<LE>()?)
-            };
-            let mask = 1u64 << (self.record_width * 8 - 1);
-            if size & mask == 0 {
-                compression = Compression::None;
-            }
-            Some(usize::try_from(size & !mask).map_err(|_| io::ErrorKind::InvalidData)?)
+            u64::from(reader.read_u32::<LE>()?)
         };
-        let mut decoder = match compression {
-            Compression::None => Decoder::None(&mut self.reader),
-            Compression::Lzma(filter_flag) => {
-                if filter_flag {
-                    self.reader.seek_relative(1)?;
-                }
-                let header = self.reader.read_t::<LzmaStreamHeader>()?;
-                Decoder::new_lzma1(&mut self.reader, header)?
-            }
-            Compression::ThreadedLzma => {
-                Decoder::ThreadedLzma(threaded_lzma::Decoder::new(&mut self.reader))
-            }
-            Compression::Lzma2 => Decoder::new_lzma2(&mut self.reader)?,
-            Compression::Zlib => Decoder::Zlib(nsis_deflate::Decoder::new(&mut self.reader)),
-            Compression::BZip2 => Decoder::NsisBZip2(nsis_bzip2::Decoder::new(
-                &mut self.reader,
-                compressed_size,
-                usize::MAX,
-            )?),
-        };
-        let size = if self.is_solid {
-            // Skip the header and preceding file records to reach this file's size prefix.
-            let skip = u64::from(self.header_size)
-                .checked_add(position)
-                .ok_or(io::ErrorKind::InvalidData)?;
-            if io::copy(&mut decoder.by_ref().take(skip), &mut io::sink())? != skip {
-                return Err(io::ErrorKind::UnexpectedEof.into());
-            }
-            Some(if self.record_width == 8 {
-                decoder.read_t::<zerocopy::U64<LE>>()?.get()
-            } else {
-                u64::from(decoder.read_u32::<LE>()?)
-            })
-        } else if compression == Compression::None {
-            compressed_size.map(|size| size as u64)
+        let mask = 1u64 << (self.record_width * 8 - 1);
+        let compression = if size & mask == 0 {
+            Compression::None
         } else {
-            None
+            self.compression
         };
+        let compressed_size =
+            usize::try_from(size & !mask).map_err(|_| io::ErrorKind::InvalidData)?;
+        let decoder = new_decoder(reader, compression, Some(compressed_size))?;
+        let size = (compression == Compression::None).then_some(compressed_size as u64);
         let mut bytes = Vec::new();
         const MAX_FILE_SIZE: u64 = 512 * 1024 * 1024;
         if size.is_some_and(|size| size > MAX_FILE_SIZE) {
@@ -197,11 +195,77 @@ impl<R: Read + Seek> FileData<R> {
         }
         Ok(Cursor::new(bytes))
     }
+
+    fn read_solid(&mut self, position: u64) -> io::Result<Cursor<Vec<u8>>> {
+        if self.solid.is_none() {
+            let cache = tempfile::tempfile()?;
+            let mut reader = self.reader.take().ok_or(io::ErrorKind::InvalidData)?;
+            reader.seek(SeekFrom::Start(self.data_offset))?;
+            self.solid = Some(SolidData {
+                decoder: new_decoder(reader, self.compression, None)?,
+                cache,
+                length: 0,
+            });
+        }
+        let solid = self.solid.as_mut().unwrap();
+        let start = u64::from(self.header_size)
+            .checked_add(position)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let data_start = start
+            .checked_add(self.record_width as u64)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        solid.ensure(data_start)?;
+        solid.cache.seek(SeekFrom::Start(start))?;
+        let size = if self.record_width == 8 {
+            solid.cache.read_t::<zerocopy::U64<LE>>()?.get()
+        } else {
+            u64::from(solid.cache.read_u32::<LE>()?)
+        };
+        if size > 512 * 1024 * 1024 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let end = data_start
+            .checked_add(size)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        solid.ensure(end)?;
+        solid.cache.seek(SeekFrom::Start(data_start))?;
+        let mut bytes = Vec::new();
+        solid.cache.by_ref().take(size).read_to_end(&mut bytes)?;
+        Ok(Cursor::new(bytes))
+    }
+}
+
+fn new_decoder<R: Read + Seek>(
+    mut reader: R,
+    compression: Compression,
+    compressed_size: Option<usize>,
+) -> io::Result<Decoder<R>> {
+    Ok(match compression {
+        Compression::None => Decoder::None(reader),
+        Compression::Lzma(filter_flag) => {
+            if filter_flag {
+                reader.seek_relative(1)?;
+            }
+            let header = reader.read_t::<LzmaStreamHeader>()?;
+            Decoder::new_lzma1(reader, header)?
+        }
+        Compression::ThreadedLzma => Decoder::ThreadedLzma(threaded_lzma::Decoder::new(reader)),
+        Compression::Lzma2 => Decoder::new_lzma2(reader)?,
+        Compression::Zlib => Decoder::Zlib(nsis_deflate::Decoder::new(reader)),
+        Compression::BZip2 => Decoder::NsisBZip2(nsis_bzip2::Decoder::new(
+            reader,
+            compressed_size,
+            usize::MAX,
+        )?),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Write};
+    use std::{
+        cell::Cell,
+        io::{Cursor, Write},
+    };
 
     use flate2::{Compression as Level, write::DeflateEncoder};
     use rstest::rstest;
@@ -228,6 +292,49 @@ mod tests {
                 210, 109, 0, 0,
             ]
         }
+    }
+
+    struct CountedReader<'a> {
+        inner: Cursor<Vec<u8>>,
+        count: &'a Cell<usize>,
+    }
+
+    impl Read for CountedReader<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.inner.read(bytes)?;
+            self.count.set(self.count.get() + count);
+            Ok(count)
+        }
+    }
+
+    impl Seek for CountedReader<'_> {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn solid_reads_resume_and_backward_reads_use_cached_output() {
+        let mut stream = 0u32.to_le_bytes().to_vec();
+        stream.extend(5u32.to_le_bytes());
+        stream.extend(b"first");
+        stream.extend(6u32.to_le_bytes());
+        stream.extend(b"second");
+        let count = Cell::new(0);
+        let source = CountedReader {
+            inner: Cursor::new(stream),
+            count: &count,
+        };
+        let mut reader = FileData::new(source, 0, 0, true, 0, Compression::None);
+        assert_eq!(reader.read(4).unwrap().into_inner(), b"first");
+        assert_eq!(count.get(), 13);
+        assert_eq!(reader.read(13).unwrap().into_inner(), b"second");
+        assert_eq!(count.get(), 23);
+        for _ in 0..10 {
+            assert_eq!(reader.read(4).unwrap().into_inner(), b"first");
+            assert_eq!(reader.read(13).unwrap().into_inner(), b"second");
+        }
+        assert_eq!(count.get(), 23);
     }
 
     #[rstest]
