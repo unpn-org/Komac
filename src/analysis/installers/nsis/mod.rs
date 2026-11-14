@@ -10,6 +10,7 @@ mod ini;
 mod int_fmt;
 mod language;
 mod registry;
+mod scope_switches;
 mod section;
 mod state;
 mod strings;
@@ -31,7 +32,7 @@ use winget_types::{
     LanguageTag,
     installer::{
         AppsAndFeaturesEntries, AppsAndFeaturesEntry, Architecture, InstallationMetadata,
-        Installer, InstallerType, Scope,
+        Installer, InstallerType, Scope, Switches,
     },
 };
 
@@ -59,6 +60,7 @@ const APP_64: &str = "app-64";
 pub struct Nsis {
     pub architecture: Architecture,
     pub is_portable: bool,
+    pub scope_switches: Option<scope_switches::ScopeSwitches>,
     pub registry: Registry,
     pub primary_language_id: u16,
     pub install_directory: Option<Utf8WindowsPathBuf>,
@@ -138,6 +140,13 @@ impl Nsis {
             } else {
                 0x200
             });
+
+        let scope_switches = scope_switches::detect(
+            state.entries(),
+            |offset| state.get_string(offset).into_string_lossy(),
+            |offset| state.string_variable(offset),
+            state.str_block,
+        );
 
         enum Outcome {
             Ready,
@@ -281,6 +290,7 @@ impl Nsis {
         Ok(Self {
             architecture: architecture.unwrap_or(Architecture::X86),
             is_portable: state.is_portable(),
+            scope_switches,
             registry: state.registry,
             install_directory: state.variables.install_dir(),
             primary_language_id: state.language_table.id(),
@@ -376,7 +386,24 @@ impl Installers for Nsis {
             ..Installer::default()
         };
 
-        vec![installer]
+        if let Some(switches) = self.scope_switches.filter(|_| !self.is_portable) {
+            switches
+                .switches()
+                .into_iter()
+                .map(|(switch, scope)| Installer {
+                    scope: Some(scope),
+                    switches: Switches::builder().custom(switch.parse().unwrap()).build(),
+                    installation_metadata: if install_directory_scope == Some(scope) {
+                        installer.installation_metadata.clone()
+                    } else {
+                        InstallationMetadata::default()
+                    },
+                    ..installer.clone()
+                })
+                .collect()
+        } else {
+            vec![installer]
+        }
     }
 }
 
@@ -395,10 +422,54 @@ mod tests {
         Nsis {
             architecture: Architecture::X64,
             is_portable: false,
+            scope_switches: None,
             registry,
             primary_language_id: 1033,
             install_directory: Some(Utf8WindowsPathBuf::from(install_directory)),
         }
+    }
+
+    #[test]
+    fn scope_switches_create_two_entries_with_matching_metadata() {
+        let mut nsis = nsis_with_scope_signals(
+            RegRoot::HKEY_CURRENT_USER,
+            r"%LocalAppData%\Programs\Test App",
+        );
+        nsis.scope_switches = Some(scope_switches::ScopeSwitches::ElectronBuilder);
+        let installers = nsis.installers();
+        assert_eq!(installers.len(), 2);
+        assert_eq!(installers[0].scope, Some(Scope::User));
+        assert_eq!(installers[1].scope, Some(Scope::Machine));
+        assert!(!installers[0].installation_metadata.is_empty());
+        assert!(installers[1].installation_metadata.is_empty());
+        assert_eq!(
+            installers[0].switches,
+            Switches::builder()
+                .custom("/currentuser".parse().unwrap())
+                .build()
+        );
+        assert_eq!(
+            installers[1].switches,
+            Switches::builder()
+                .custom("/allusers".parse().unwrap())
+                .build()
+        );
+        nsis.scope_switches = Some(scope_switches::ScopeSwitches::Tauri);
+        let installers = nsis.installers();
+        assert_eq!(
+            installers[0].switches,
+            Switches::builder()
+                .custom("/CurrentUser".parse().unwrap())
+                .build()
+        );
+        assert_eq!(
+            installers[1].switches,
+            Switches::builder()
+                .custom("/AllUsers".parse().unwrap())
+                .build()
+        );
+        nsis.is_portable = true;
+        assert_eq!(nsis.installers().len(), 1);
     }
 
     #[test]
