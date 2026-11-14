@@ -194,6 +194,23 @@ impl<'data> NsisState<'data> {
         }
     }
 
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// Returns the register referenced by a string containing only one variable.
+    pub fn string_variable(&self, offset: i32) -> Option<usize> {
+        self.get_string(offset);
+        match self
+            .string_cache
+            .borrow()
+            .get(&(offset, self.version, self.string_version))
+        {
+            Some(CachedString::Variable(index)) => Some(*index),
+            _ => None,
+        }
+    }
+
     /// Resolves the string at `relative_offset` in the strings block, substituting any variables,
     /// shell folders, and language strings it references. A negative offset refers to a string in
     /// the language table. The string is borrowed from the strings block when it needs no
