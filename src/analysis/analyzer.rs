@@ -43,14 +43,7 @@ impl<'reader, R: Read + Seek> Analyzer<'reader, R> {
         file_name: &str,
         font_analysis: FontAnalysis,
     ) -> Result<Self> {
-        Self::with_installer_type(
-            reader,
-            file_name,
-            font_analysis,
-            None,
-            &[],
-            None,
-        )
+        Self::with_installer_type(reader, file_name, font_analysis, None, &[], None)
     }
 
     pub(crate) fn with_installer_type(
