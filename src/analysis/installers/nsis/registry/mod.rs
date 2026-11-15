@@ -54,12 +54,14 @@ impl Registry {
             .filter(|(root, _)| root.is_current_user() || root.is_local_machine())
             .flat_map(|(&root, keys)| {
                 keys.iter().filter_map(move |(key, values)| {
-                    let (parent, product_code) = key.trim_end_matches('\\').rsplit_once('\\')?;
-                    (parent.eq_ignore_ascii_case(CURRENT_VERSION_UNINSTALL)
-                        && !product_code.is_empty())
-                    .then_some((root, product_code, values))
+                    Self::uninstall_product_code(key).map(|code| (root, code, values))
                 })
             })
+    }
+
+    pub fn uninstall_product_code(key: &str) -> Option<&str> {
+        let (parent, code) = key.trim_end_matches('\\').rsplit_once('\\')?;
+        (parent.eq_ignore_ascii_case(CURRENT_VERSION_UNINSTALL) && !code.is_empty()).then_some(code)
     }
 
     pub fn uninstall_value<'a>(values: &'a Values, name: &str) -> Option<&'a Value> {

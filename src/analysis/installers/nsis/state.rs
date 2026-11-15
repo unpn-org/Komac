@@ -210,6 +210,19 @@ impl<'data> NsisState<'data> {
         &self.entries
     }
 
+    /// Reads only strings with no variable, shell-folder, or encoded references.
+    pub fn literal_string(&self, offset: i32) -> Option<String> {
+        self.get_string(offset);
+        match self
+            .string_cache
+            .borrow()
+            .get(&(offset, self.version, self.string_version))
+        {
+            Some(CachedString::Literal(value)) => Some(value.to_string_lossy().into_owned()),
+            _ => None,
+        }
+    }
+
     /// Returns the register referenced by a string containing only one variable.
     pub fn string_variable(&self, offset: i32) -> Option<usize> {
         self.get_string(offset);
@@ -1081,6 +1094,17 @@ mod tests {
             .insert(0, (0..100).map(|i| format!("file{i}.dll")).collect());
         assert_eq!(state.execute_code_segment(0), Ok(Entry::Return));
         assert_eq!(state.find_handles[&0].len(), 0);
+    }
+
+    #[test]
+    fn literal_reads_reject_interpolated_values_even_if_variables_are_populated() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let mut state = state(b"\0Bitwarden\x03\x80\x80\0Bitwarden Inc.\0", &[], &mut read);
+        state.variables.insert(0, "stale-hash");
+        assert_eq!(state.get_string(1), "Bitwardenstale-hash");
+        assert_eq!(state.literal_string(1), None);
+        assert_eq!(state.literal_string(14).as_deref(), Some("Bitwarden Inc."));
+        assert_eq!(state.literal_string(i32::MAX), None);
     }
 
     #[test]
