@@ -1,3 +1,4 @@
+mod arp;
 mod codepage;
 mod entry;
 mod error;
@@ -62,6 +63,7 @@ pub struct Nsis {
     pub is_portable: bool,
     pub scope_switches: Option<scope_switches::ScopeSwitches>,
     pub registry: Registry,
+    pub literal_arp_entries: AppsAndFeaturesEntries,
     pub primary_language_id: u16,
     pub install_directory: Option<Utf8WindowsPathBuf>,
 }
@@ -156,6 +158,7 @@ impl Nsis {
             Incomplete,
         }
         let mut outcome = Outcome::Ready;
+        let mut download_interrupted = false;
 
         // Abort/Quit in .onInit prevents installation. Interpreter failures also
         // cannot justify registry writes from sections that were never reached.
@@ -169,6 +172,8 @@ impl Nsis {
                     outcome = Outcome::Quit;
                 }
                 Err(invalid_entry) => {
+                    download_interrupted =
+                        matches!(invalid_entry, EntryError::UnsupportedPlugin { .. });
                     error!(%invalid_entry);
                     outcome = Outcome::Incomplete;
                 }
@@ -200,6 +205,8 @@ impl Nsis {
                     outcome = Outcome::Quit;
                 }
                 Err(invalid_entry) => {
+                    download_interrupted =
+                        matches!(invalid_entry, EntryError::UnsupportedPlugin { .. });
                     outcome = if matches!(
                         invalid_entry,
                         EntryError::Abort { .. } | EntryError::Execute
@@ -287,11 +294,27 @@ impl Nsis {
                     })
             });
 
+        let literal_arp_entries = if download_interrupted
+            && state.registry.uninstall_entries().next().is_none()
+        {
+            let entries =
+                arp::from_literal_writes(state.entries(), |offset| state.literal_string(offset));
+            if !entries.is_empty() {
+                warn!(
+                    "Recovered literal ARP identity from compiled registry writes after an unsupported download; installation-dependent values remain omitted"
+                );
+            }
+            entries
+        } else {
+            AppsAndFeaturesEntries::default()
+        };
+
         Ok(Self {
             architecture: architecture.unwrap_or(Architecture::X86),
             is_portable: state.is_portable(),
             scope_switches,
             registry: state.registry,
+            literal_arp_entries,
             install_directory: state.variables.install_dir(),
             primary_language_id: state.language_table.id(),
         })
@@ -309,7 +332,12 @@ impl Nsis {
 
 impl Installers for Nsis {
     fn installers(&self) -> Vec<Installer> {
-        let product_code = self.registry.product_code();
+        let product_code = self.registry.product_code().or_else(|| {
+            self.literal_arp_entries
+                .iter()
+                .next()
+                .and_then(|entry| entry.product_code())
+        });
         let detected_scope = self.registry.product_code_scope();
         let install_directory_scope = self
             .install_directory
@@ -323,7 +351,7 @@ impl Installers for Nsis {
             }
             (detected_scope, install_directory_scope) => detected_scope.or(install_directory_scope),
         };
-        let apps_and_features_entries = self
+        let mut apps_and_features_entries = self
             .registry
             .uninstall_entries()
             .filter_map(|(_, code, values)| {
@@ -340,6 +368,10 @@ impl Installers for Nsis {
                 })
             })
             .collect::<AppsAndFeaturesEntries>();
+
+        if apps_and_features_entries.is_empty() {
+            apps_and_features_entries = self.literal_arp_entries.clone();
+        }
 
         let installer = Installer {
             locale: LanguageId::from_id(self.primary_language_id)
@@ -424,9 +456,55 @@ mod tests {
             is_portable: false,
             scope_switches: None,
             registry,
+            literal_arp_entries: AppsAndFeaturesEntries::default(),
             primary_language_id: 1033,
             install_directory: Some(Utf8WindowsPathBuf::from(install_directory)),
         }
+    }
+
+    #[test]
+    fn fallback_arp_does_not_invent_scope_or_replace_executed_identity() {
+        let mut nsis =
+            nsis_with_scope_signals(RegRoot::HKEY_LOCAL_MACHINE, r"%ProgramFiles%\Test App");
+        nsis.registry
+            .remove_key(RegRoot::HKEY_LOCAL_MACHINE, UNINSTALL_KEY);
+        nsis.install_directory = None;
+        nsis.literal_arp_entries = std::iter::once(
+            AppsAndFeaturesEntry::builder()
+                .product_code("Fallback.App")
+                .publisher("Literal Publisher")
+                .build(),
+        )
+        .collect();
+        let installer = nsis.installers().remove(0);
+        assert_eq!(installer.product_code.as_deref(), Some("Fallback.App"));
+        assert_eq!(installer.scope, None);
+        assert_eq!(
+            installer
+                .apps_and_features_entries
+                .iter()
+                .next()
+                .unwrap()
+                .display_name(),
+            None
+        );
+        nsis.registry.insert_value(
+            RegRoot::HKEY_LOCAL_MACHINE,
+            UNINSTALL_KEY,
+            "DisplayName",
+            "Executed App",
+        );
+        let installer = nsis.installers().remove(0);
+        assert_eq!(installer.product_code.as_deref(), Some("Test.App"));
+        assert_eq!(
+            installer
+                .apps_and_features_entries
+                .iter()
+                .next()
+                .unwrap()
+                .display_name(),
+            Some("Executed App")
+        );
     }
 
     #[test]
