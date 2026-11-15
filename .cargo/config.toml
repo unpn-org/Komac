@@ -25,7 +25,9 @@ rustflags = [
   "-Clink-args=/NODEFAULTLIB:libucrt.lib",
 ]
 
-[build]
+# Matching target rustflags are merged; a universal target rule keeps compiler
+# threading enabled alongside architecture- and platform-specific options.
+[target.'cfg(all())']
 rustflags = ["-Z", "threads=0"]
 
 # Use the official crates.io index under a distinct registry identity so the
