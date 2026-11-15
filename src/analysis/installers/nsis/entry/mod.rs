@@ -53,6 +53,13 @@ pub enum EntryError {
     Invalid,
     #[error("Execution error")]
     Execute,
+    #[error("Static simulation stopped at unsupported plugin {dll_file_name}::{function}")]
+    UnsupportedPlugin {
+        dll_file_name: String,
+        function: String,
+    },
+    #[error("NSIS simulation stack limit exceeded (possible stack-growing loop)")]
+    StackLimit,
     #[error("Ran into infinite loop")]
     InfiniteLoop,
 }
@@ -1291,6 +1298,20 @@ impl Entry {
                         // Simulate an administrative installation and report that assumption.
                         stack.push(Cow::Borrowed("Admin"));
                         warn!(%function, "UserInfo uses a simulated administrator account; account-dependent metadata requires independent validation");
+                    } else if dll_file_name
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("INetC.dll"))
+                    {
+                        // A web installer's retry loop depends on the download
+                        // result. Leaving its arguments on the stack fabricates
+                        // a result and can grow the stack on every retry. Neither
+                        // success nor failure can be inferred without the remote
+                        // payload, so stop before recording dependent metadata.
+                        return Err(EntryError::UnsupportedPlugin {
+                            dll_file_name,
+                            function,
+                        });
                     } else if dll_file_name.ends_with("NSISdl.dll") && function == "download" {
                         // NSISdl::download consumes file, URL, and optional switches, then pushes
                         // "success" or an error message. Treat downloads as successful so analysis

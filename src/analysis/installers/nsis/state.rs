@@ -42,6 +42,10 @@ impl CachedString<'_> {
     }
 }
 
+// Bound retry loops that leak arguments before plug-in stack conversion and
+// logging turn the instruction-budget watchdog into quadratic work.
+const MAX_STACK_DEPTH: usize = 1024;
+
 pub struct NsisState<'data> {
     pub read_file: &'data mut dyn FnMut(u64) -> io::Result<Cursor<Vec<u8>>>,
     pub str_block: &'data [u8],
@@ -503,6 +507,9 @@ impl<'data> NsisState<'data> {
             .saturating_mul(1024)
             .clamp(128, 64 * 1024 * 1024);
         while let Ok(index) = usize::try_from(position) {
+            if self.stack.len() > MAX_STACK_DEPTH {
+                return Err(EntryError::StackLimit);
+            }
             total_steps += 1;
             if total_steps > instruction_budget {
                 return Err(EntryError::InfiniteLoop);
@@ -1030,6 +1037,61 @@ mod tests {
             .insert(0, (0..100).map(|i| format!("file{i}.dll")).collect());
         assert_eq!(state.execute_code_segment(0), Ok(Entry::Return));
         assert_eq!(state.find_handles[&0].len(), 0);
+    }
+
+    #[test]
+    fn unsupported_download_stops_before_retrying_or_changing_the_stack() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        let dll = "Plugins\\INetC.dll";
+        let strings = format!("\0{dll}\0get\0");
+        let entries = [
+            Entry::RegisterDLL {
+                dll_file_name: I32::new(1),
+                function: I32::new(dll.len() as i32 + 2),
+                display_text: I32::ZERO,
+                no_unload: I32::new(1),
+            },
+            Entry::Jump {
+                address: I32::new(1),
+            },
+        ];
+        let mut state = state(strings.as_bytes(), &entries, &mut read);
+        for value in [
+            "saved",
+            "/END",
+            "package.7z",
+            "https://example.com/package.7z",
+            "/USERAGENT",
+        ] {
+            state.stack.push(state.encode(value).into());
+        }
+        let stack = state.stack.clone();
+        assert_eq!(
+            state.execute_code_segment(0),
+            Err(EntryError::UnsupportedPlugin {
+                dll_file_name: dll.to_owned(),
+                function: "get".to_owned(),
+            })
+        );
+        assert_eq!(state.stack, stack);
+    }
+
+    #[test]
+    fn stack_growing_loops_stop_before_the_instruction_budget() {
+        let mut read = |_| Ok(Cursor::new(Vec::new()));
+        // A large script must not give a small leaking loop millions of steps.
+        let mut entries = vec![Entry::Return; 4096];
+        let raw = [31i32, 1, 0, 0, 0, 0, 0]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect::<Vec<_>>();
+        entries[0] = Entry::try_read_from_bytes(&raw).unwrap();
+        entries[1] = Entry::Jump {
+            address: I32::new(1),
+        };
+        let mut state = state(b"\0argument\0", &entries, &mut read);
+        assert_eq!(state.execute_code_segment(0), Err(EntryError::StackLimit));
+        assert_eq!(state.stack.len(), MAX_STACK_DEPTH + 1);
     }
 
     #[test]
