@@ -74,14 +74,22 @@ impl FileExtension {
     /// `https://example.com/file.msi/download`.
     #[must_use]
     pub fn from_url(url: &url::Url) -> Option<Self> {
-        url.path_segments()?.rev().find_map(|segment| {
-            segment.rsplit_once('.').and_then(|(file_stem, extension)| {
-                if file_stem.is_empty() {
-                    None
-                } else {
-                    extension.parse().ok()
-                }
-            })
+        Self::filename_from_url(url)?
+            .rsplit_once('.')?
+            .1
+            .parse()
+            .ok()
+    }
+
+    /// Finds the artifact name, ignoring trailing download-wrapper segments.
+    #[must_use]
+    pub fn filename_from_url(url: &url::Url) -> Option<&str> {
+        url.path_segments()?.rev().find(|segment| {
+            segment
+                .rsplit_once('.')
+                .is_some_and(|(file_stem, extension)| {
+                    !file_stem.is_empty() && extension.parse::<Self>().is_ok()
+                })
         })
     }
 }
