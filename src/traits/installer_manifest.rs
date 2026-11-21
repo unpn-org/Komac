@@ -397,6 +397,69 @@ mod tests {
     use crate::manifests::to_yaml_string;
 
     #[test]
+    fn update_preserves_artifact_variants_and_dependency() {
+        let mut manifest = InstallerManifest {
+            r#type: Some(InstallerType::Exe),
+            installers: vec![
+                Installer {
+                    architecture: Architecture::X86,
+                    url: "https://example.com/v1/app-installer32.exe"
+                        .parse()
+                        .unwrap(),
+                    ..Installer::default()
+                },
+                Installer {
+                    architecture: Architecture::X64,
+                    url: "https://example.com/v1/app-no-runtime.exe".parse().unwrap(),
+                    dependencies: serde_saphyr::from_str(
+                        "PackageDependencies:\n- PackageIdentifier: Example.Runtime",
+                    )
+                    .unwrap(),
+                    ..Installer::default()
+                },
+            ],
+            ..InstallerManifest::default()
+        };
+        let previous = manifest.inherit_manifest_properties().collect::<Vec<_>>();
+        let new_installers = previous
+            .iter()
+            .map(|installer| Installer {
+                architecture: installer.architecture,
+                r#type: Some(if installer.architecture == Architecture::X64 {
+                    InstallerType::Portable
+                } else {
+                    InstallerType::Exe
+                }),
+                url: installer
+                    .url
+                    .as_str()
+                    .replace("/v1/", "/v2/")
+                    .parse()
+                    .unwrap(),
+                ..Installer::default()
+            })
+            .collect::<Vec<_>>();
+
+        manifest.update_installers(&new_installers, &HashMap::new());
+        manifest.normalize_installers(&DefaultLocaleManifest::default());
+
+        let updated = manifest.inherit_manifest_properties().collect::<Vec<_>>();
+        assert_eq!(updated.len(), 2);
+        for old in &previous {
+            let installer = updated
+                .iter()
+                .find(|installer| installer.architecture == old.architecture)
+                .unwrap();
+            assert_eq!(
+                installer.url.as_str(),
+                old.url.as_str().replace("/v1/", "/v2/")
+            );
+            assert_eq!(installer.r#type, Some(InstallerType::Exe));
+            assert_eq!(installer.dependencies, old.dependencies);
+        }
+    }
+
+    #[test]
     fn normalization_preserves_new_manifest_release_dates_and_is_idempotent() {
         let mut manifest = InstallerManifest {
             release_date: Some("2026-11-07".parse().unwrap()),

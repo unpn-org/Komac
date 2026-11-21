@@ -126,6 +126,7 @@ pub fn match_installers(
                             && FileExtension::from_url(&new_installer.url) == previous_extension
                     });
             let mut max_score = 0.0;
+            let mut best_filename_match = false;
             let mut best_match = None;
 
             for new_installer in new_installers {
@@ -183,12 +184,21 @@ pub fn match_installers(
                 let is_new_scope =
                     !found_scopes.is_empty() && !found_scopes.contains_key(installer_url);
 
-                if score > max_score
-                    || (score.total_cmp(&max_score).is_eq()
-                        && (is_new_architecture || is_new_scope))
-                    || best_match.is_none()
+                // Release directories can change while artifact names stay stable. Preserve
+                // that identity even when generic EXE analysis changes the detected type.
+                let filename_match = FileExtension::filename_from_url(&previous_installer.url)
+                    .is_some_and(|filename| {
+                        Some(filename) == FileExtension::filename_from_url(installer_url)
+                    });
+                if best_match.is_none()
+                    || (filename_match && !best_filename_match)
+                    || (filename_match == best_filename_match
+                        && (score > max_score
+                            || (score.total_cmp(&max_score).is_eq()
+                                && (is_new_architecture || is_new_scope))))
                 {
                     max_score = score;
+                    best_filename_match = filename_match;
                     best_match = Some(new_installer);
                 }
             }
@@ -245,6 +255,47 @@ mod tests {
     };
 
     use crate::match_installers::{match_installers, unmatched_installers};
+
+    #[rstest]
+    #[case::wrapper_to_direct("app.exe/download", "app.exe")]
+    #[case::direct_to_wrapper("app.exe", "app.exe/download")]
+    #[case::wrapper_to_wrapper("app.exe/download", "app.exe/download")]
+    fn matches_artifact_name_through_download_wrappers(
+        #[case] previous_path: &str,
+        #[case] new_path: &str,
+        #[values(false, true)] reverse: bool,
+    ) {
+        let previous = Installer {
+            architecture: Architecture::X64,
+            r#type: Some(InstallerType::Exe),
+            url: format!("https://example.com/v1/{previous_path}")
+                .parse()
+                .unwrap(),
+            ..Installer::default()
+        };
+        let expected = Installer {
+            url: format!("https://example.com/v2/{new_path}")
+                .parse()
+                .unwrap(),
+            ..previous.clone()
+        };
+        let portable = Installer {
+            architecture: Architecture::X86,
+            r#type: Some(InstallerType::Portable),
+            url: "https://example.com/v2/app-portable.exe/download"
+                .parse()
+                .unwrap(),
+            ..Installer::default()
+        };
+        let mut candidates = vec![expected.clone(), portable];
+        if reverse {
+            candidates.reverse();
+        }
+        assert_eq!(
+            match_installers(from_ref(&previous), &candidates),
+            HashMap::from([(previous, expected)]),
+        );
+    }
 
     #[test]
     fn test_vscodium() {
