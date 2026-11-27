@@ -26,6 +26,8 @@ pub trait InstallerManifestExt {
 
     fn normalize_installers(&mut self, default_locale: &DefaultLocaleManifest);
 
+    /// Returns the previous installer hints for analyzing a download, including all declared
+    /// nested paths for a ZIP shared by multiple entries for the selected architecture.
     fn installer_for_url(
         &self,
         url: &DecodedUrl,
@@ -52,7 +54,8 @@ impl InstallerManifestExt for InstallerManifest {
         let file_type = FileExtension::from_url(url);
         // New versions usually change the URL. Prefer an exact URL, then the same
         // container extension and architecture, then the closest URL spelling.
-        self.installers
+        let previous = self
+            .installers
             .iter()
             // A newly added format has no previous entry to supply analysis hints.
             // In particular, a ZIP entry must not force an MSI through the ZIP parser.
@@ -95,9 +98,29 @@ impl InstallerManifestExt for InstallerManifest {
                             Ordering::Equal
                         }
                     })
-            })
-            .cloned()
-            .map(|installer| inherit_installer_properties(installer, self))
+            })?;
+        let mut installer = inherit_installer_properties(previous.clone(), self);
+        if installer.r#type == Some(InstallerType::Zip) {
+            let sibling_files = self
+                .installers
+                .iter()
+                .filter(|sibling| {
+                    sibling.url == previous.url
+                        && sibling.architecture == previous.architecture
+                        && sibling.r#type.or(self.r#type) == Some(InstallerType::Zip)
+                })
+                .flat_map(|sibling| {
+                    if sibling.nested_installer_files.is_empty() {
+                        &self.nested_installer_files
+                    } else {
+                        &sibling.nested_installer_files
+                    }
+                });
+            installer
+                .nested_installer_files
+                .extend(sibling_files.cloned());
+        }
+        Some(installer)
     }
 
     fn inherit_manifest_properties(&self) -> impl Iterator<Item = Installer> + '_ {

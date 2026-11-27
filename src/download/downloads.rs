@@ -111,6 +111,34 @@ mod tests {
     use super::*;
     use crate::download::Download;
 
+    fn msi_with_properties(properties: &[(&str, &str)]) -> Result<Package<Cursor<Vec<u8>>>> {
+        let mut msi = Package::create(PackageType::Installer, Cursor::new(Vec::new()))?;
+        msi.create_table(
+            "Property",
+            vec![
+                Column::build("Property").primary_key().string(72),
+                Column::build("Value").string(0),
+            ],
+        )?;
+        msi.insert_rows(
+            Insert::into("Property").rows(
+                properties
+                    .iter()
+                    .map(|&(name, value)| vec![Value::from(name), Value::from(value)])
+                    .collect(),
+            ),
+        )?;
+        msi.create_table(
+            "Directory",
+            vec![
+                Column::build("Directory").primary_key().string(72),
+                Column::build("Directory_Parent").nullable().string(72),
+                Column::build("DefaultDir").string(255),
+            ],
+        )?;
+        Ok(msi)
+    }
+
     #[rstest::rstest]
     #[case::x64(Architecture::X64, "x64")]
     #[case::arm64(Architecture::Arm64, "Arm64")]
@@ -182,27 +210,8 @@ mod tests {
         #[case] architecture_override: Option<Architecture>,
     ) -> Result<()> {
         let product_code = "{738E0982-AF6C-478E-B3DD-D03BD2A49C70}";
-        let mut msi = Package::create(PackageType::Installer, Cursor::new(Vec::new()))?;
+        let mut msi = msi_with_properties(&[("ProductCode", product_code)])?;
         msi.summary_info_mut().set_arch("x64");
-        msi.create_table(
-            "Property",
-            vec![
-                Column::build("Property").primary_key().string(72),
-                Column::build("Value").string(0),
-            ],
-        )?;
-        msi.insert_rows(
-            Insert::into("Property")
-                .row(vec![Value::from("ProductCode"), Value::from(product_code)]),
-        )?;
-        msi.create_table(
-            "Directory",
-            vec![
-                Column::build("Directory").primary_key().string(72),
-                Column::build("Directory_Parent").nullable().string(72),
-                Column::build("DefaultDir").string(255),
-            ],
-        )?;
         let msi_bytes = msi.into_inner()?.into_inner();
         let mut file = tempfile::tempfile()?;
         {
@@ -301,6 +310,83 @@ mod tests {
                 .relative_file_path,
             "redist\\GameInputRedist.msi"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_zip_refreshes_each_nested_installer_display_version() -> Result<()> {
+        let payloads = [("setup.msi", "2.0.0.65535"), ("tools.msi", "3.0.0")];
+        let mut file = tempfile::tempfile()?;
+        {
+            let mut writer = ZipWriter::new(&mut file);
+            for (path, version) in payloads {
+                let msi = msi_with_properties(&[("ProductVersion", version)])?;
+                writer.start_file(path, SimpleFileOptions::default())?;
+                writer.write_all(&msi.into_inner()?.into_inner())?;
+            }
+            writer.start_file("helper.exe", SimpleFileOptions::default())?;
+            writer.write_all(b"undeclared executable must not be analyzed")?;
+            writer.finish()?;
+        }
+        file.rewind()?;
+        let mut files = Downloads::new([DownloadedFile {
+            file,
+            download: Download {
+                url: "https://example.com/v2/app-x86.zip".parse()?,
+                file_name: "app-x86.zip".to_owned(),
+                response: None,
+            },
+            sha_256: Default::default(),
+            last_modified: None,
+        }]);
+        let old_url: DecodedUrl = "https://example.com/v1/app-x86.zip".parse()?;
+        let mut manifest = InstallerManifest {
+            r#type: Some(InstallerType::Zip),
+            nested_installer_type: Some(NestedInstallerType::Msi),
+            installers: payloads
+                .iter()
+                .map(|&(path, _)| Installer {
+                    architecture: Architecture::X86,
+                    url: old_url.clone(),
+                    nested_installer_files: BTreeSet::from([NestedInstallerFiles {
+                        relative_file_path: path.into(),
+                        portable_command_alias: None,
+                    }]),
+                    apps_and_features_entries: serde_saphyr::from_str("- DisplayVersion: 1.0.0")
+                        .unwrap(),
+                    ..Installer::default()
+                })
+                .collect(),
+            ..InstallerManifest::default()
+        };
+
+        let results = files.analyze(Some(&manifest)).await?;
+        let analyzer = results.values().next().unwrap();
+        manifest.update_installers(&analyzer.installers, &HashMap::new());
+        assert_eq!(manifest.installers.len(), payloads.len());
+        for (path, version) in payloads {
+            let installer = manifest
+                .installers
+                .iter()
+                .find(|installer| {
+                    installer
+                        .nested_installer_files
+                        .iter()
+                        .any(|file| file.relative_file_path == path)
+                })
+                .unwrap();
+            assert_eq!(
+                installer
+                    .apps_and_features_entries
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .display_version()
+                    .unwrap()
+                    .as_str(),
+                version
+            );
+        }
         Ok(())
     }
 

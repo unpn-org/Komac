@@ -126,7 +126,7 @@ pub fn match_installers(
                             && FileExtension::from_url(&new_installer.url) == previous_extension
                     });
             let mut max_score = 0.0;
-            let mut best_filename_match = false;
+            let mut best_identity_match = (false, false);
             let mut best_match = None;
 
             for new_installer in new_installers {
@@ -190,15 +190,24 @@ pub fn match_installers(
                     .is_some_and(|filename| {
                         Some(filename) == FileExtension::filename_from_url(installer_url)
                     });
+                let nested_path_match =
+                    previous_installer.nested_installer_files.iter().any(|old| {
+                        let old = old.relative_file_path.normalize();
+                        new_installer.nested_installer_files.iter().any(|new| {
+                            old.as_str()
+                                .eq_ignore_ascii_case(new.relative_file_path.normalize().as_str())
+                        })
+                    });
+                let identity_match = (filename_match, nested_path_match);
                 if best_match.is_none()
-                    || (filename_match && !best_filename_match)
-                    || (filename_match == best_filename_match
+                    || identity_match > best_identity_match
+                    || (identity_match == best_identity_match
                         && (score > max_score
                             || (score.total_cmp(&max_score).is_eq()
                                 && (is_new_architecture || is_new_scope))))
                 {
                     max_score = score;
-                    best_filename_match = filename_match;
+                    best_identity_match = identity_match;
                     best_match = Some(new_installer);
                 }
             }
